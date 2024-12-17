@@ -101,10 +101,8 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 		defer func() {
 			// Eliminar el layout del mapa global
 			func() {
-				MuLayout.Lock()
-				defer MuLayout.Unlock()
 				id := content.GetIDComponet()
-				delete(Layaouts, id)
+				DeleteLayout(id)
 			}()
 
 			// Ejecutar el handler de destrucción si existe
@@ -130,7 +128,7 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 		content.SetID("content")
 
 		// Canales
-		channel := make(chan (map[string]interface{}))
+
 		drivers := make(map[string]LiveDriver)
 		channelIn := make(map[string](chan interface{}))
 		end := make(chan bool)
@@ -138,7 +136,7 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 		// Iniciar driver en goroutine
 		go func() {
 			defer HandleRecover()
-			content.StartDriver(&drivers, &channelIn, channel)
+			content.StartDriver(conn, &drivers, &channelIn)
 		}()
 
 		// Goroutine para enviar mensajes al cliente
@@ -146,11 +144,7 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 			defer HandleRecover()
 			for {
 				select {
-				case data := <-channel:
-					if err := conn.WriteJSON(data); err != nil {
-						fmt.Println("Error enviando mensaje:", err)
-						return
-					}
+
 				case <-end:
 					return
 				}

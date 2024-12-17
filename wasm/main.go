@@ -170,7 +170,7 @@ func connect() {
 }
 
 func main() {
-	document.Call("getElementById", "content").Set("innerHTML", "Disconnected")
+	document.Call("getElementById", "content").Set("innerHTML", "Disconnected2")
 	connect()
 
 	js.Global().Call("setInterval", js.FuncOf(func(this js.Value, args []js.Value) interface{} {

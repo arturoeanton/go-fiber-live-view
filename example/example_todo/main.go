@@ -2,11 +2,16 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/gofiber/fiber/v2"
-	"strconv"
-
+	"fmt"
 	"github.com/arturoeanton/go-fiber-live-view/liveview/view"
+	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"strconv"
+)
+
+var (
+	todos = make(map[string]*Todo)
+	tasks = make(map[string]Task)
 )
 
 type Task struct {
@@ -16,9 +21,16 @@ type Task struct {
 
 type Todo struct {
 	*view.ComponentDriver[*Todo]
+	ParentId   string
 	ActualTime string
 	code       string
-	Tasks      map[string]Task
+	Tasks      *map[string]Task
+}
+
+type Message struct {
+	ID     string `json:"id"`
+	Event  string `json:"event"`
+	Source string `json:"source"`
 }
 
 func (t *Todo) GetDriver() view.LiveDriver {
@@ -27,7 +39,6 @@ func (t *Todo) GetDriver() view.LiveDriver {
 
 func (t *Todo) Start() {
 	tasksString, _ := view.FileToString("tasks.json")
-	t.Tasks = make(map[string]Task)
 	json.Unmarshal([]byte(tasksString), &(t.Tasks))
 	t.Commit()
 }
@@ -48,18 +59,38 @@ func (t *Todo) Add(data interface{}) {
 		Name:  &name,
 		State: &state,
 	}
-	t.Tasks[id] = task
+	(*t.Tasks)[id] = task
 	content, _ := json.Marshal(t.Tasks)
 	view.StringToFile("tasks.json", string(content))
-	t.Commit()
+
+	//t.Commit()
+
+	msg := Message{
+		ID:     t.ParentId,
+		Event:  "UPDATE",
+		Source: "ADD",
+	}
+	msgJson, _ := json.Marshal(msg)
+	view.SendToAllLayouts(string(msgJson))
 }
 
 func (t *Todo) RemoveTask(data interface{}) {
 	id := data.(string)
-	delete(t.Tasks, id)
+	if _, ok := (*t.Tasks)[id]; !ok {
+		return
+	}
+
+	delete(*t.Tasks, id)
 	content, _ := json.Marshal(t.Tasks)
 	view.StringToFile("tasks.json", string(content))
-	t.Commit()
+	//t.Commit()
+	msg := Message{
+		ID:     t.ParentId,
+		Event:  "UPDATE",
+		Source: "REMOVE",
+	}
+	msgJson, _ := json.Marshal(msg)
+	view.SendToAllLayouts(string(msgJson))
 }
 
 func (t *Todo) Change(data interface{}) {
@@ -71,10 +102,18 @@ func (t *Todo) Change(data interface{}) {
 		Name:  &name,
 		State: &state,
 	}
-	t.Tasks[id] = task
+	(*t.Tasks)[id] = task
 	content, _ := json.Marshal(t.Tasks)
 	view.StringToFile("tasks.json", string(content))
-	t.Commit()
+	//t.Commit()
+
+	msg := Message{
+		ID:     t.ParentId,
+		Event:  "UPDATE",
+		Source: "CHANGE",
+	}
+	msgJson, _ := json.Marshal(msg)
+	view.SendToAllLayouts(string(msgJson))
 }
 
 func main() {
@@ -88,8 +127,41 @@ func main() {
 		//	Debug:    true,
 	}
 	home.Register(func() view.LiveDriver {
-		view.New("todo", &Todo{})
-		return view.NewLayout("layout1", `<div> {{mount "todo"}} </div>`)
+		idLayout := uuid.NewString()
+		document := view.NewLayout(idLayout, `<div> {{mount "todo"}} </div>`)
+
+		todo := &Todo{
+			ParentId: idLayout,
+			Tasks:    &tasks,
+		}
+		todos[idLayout] = todo
+		view.New("todo", todo)
+
+		document.Component.SetHandlerEventIn(func(data interface{}) {
+			msgJson := data.(string)
+
+			if msgJson == "FIRST_TIME" {
+				return
+			}
+
+			var msg Message
+			err := json.Unmarshal([]byte(msgJson), &msg)
+			if err != nil {
+				return
+			}
+
+			if msg.Event == "UPDATE" {
+				for _, t := range todos {
+
+					fmt.Println(idLayout, "event", msgJson)
+
+					t.Commit()
+
+				}
+			}
+		})
+
+		return document
 	})
 
 	app.Listen(":3000")

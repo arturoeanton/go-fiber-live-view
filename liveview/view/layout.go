@@ -13,7 +13,7 @@ type Layout struct {
 	*ComponentDriver[*Layout]
 	UUID                string
 	Html                string
-	ChanIn              chan interface{}
+	CloseChan           chan bool
 	HandlerEventIn      *func(data interface{})
 	HandlerEventTime    *func()
 	HandlerEventDestroy *func(id string)
@@ -30,69 +30,96 @@ var (
 	Layaouts map[string]*Layout = make(map[string]*Layout)
 )
 
-func SendToAllLayouts(msg interface{}) {
+func DeleteLayout(uid string) {
 	MuLayout.Lock()
 	defer MuLayout.Unlock()
-	wg := sync.WaitGroup{}
-	for _, v := range Layaouts {
-		wg.Add(1)
-		go func(v *Layout) {
-			defer wg.Done()
-			v.ChanIn <- msg
-		}(v)
+	if layout, ok := Layaouts[uid]; ok {
+
+		// Cerrar el canal CloseChan de forma segura
+		select {
+		case <-layout.CloseChan:
+			// Ya está cerrado, no hacer nada
+		default:
+			close(layout.CloseChan)
+			fmt.Println("Canal CloseChan cerrado correctamente")
+		}
+
+		// Eliminar el layout del mapa
+		delete(Layaouts, uid)
+		fmt.Println("Layout eliminado:", uid)
 	}
-	wg.Wait()
 }
 
-func SendToLayouts(msg interface{}, uuids ...string) {
-	MuLayout.Lock()
-	defer MuLayout.Unlock()
-	wg := sync.WaitGroup{}
-	for _, uid := range uuids {
-		wg.Add(1)
-		go func(uid string) {
-			defer wg.Done()
-			v, ok := Layaouts[uid]
-			if ok {
-				v.ChanIn <- msg
-			}
-		}(uid)
+func SendToAllLayouts(msg interface{}) {
+	MuLayout.Lock() // Lectura segura
+	layoutsCopy := make([]*Layout, 0, len(Layaouts))
+	for _, v := range Layaouts {
+		layoutsCopy = append(layoutsCopy, v)
 	}
-	wg.Wait()
+	MuLayout.Unlock() // Liberar bloqueo antes de operar en goroutines
+
+	for _, v := range layoutsCopy {
+		(*v.HandlerEventIn)(msg)
+	}
+}
+func SendToLayouts(msg interface{}, uuids ...string) {
+	layoutsCopy := make([]*Layout, 0, len(uuids))
+	func() {
+		MuLayout.Lock()
+		defer MuLayout.Unlock()
+		for _, uid := range uuids {
+			if v, ok := Layaouts[uid]; ok {
+				layoutsCopy = append(layoutsCopy, v)
+			}
+		}
+	}()
+
+	for _, v := range layoutsCopy {
+		(*v.HandlerEventIn)(msg)
+	}
 }
 
 func NewLayout(uid string, paramHtml string) *ComponentDriver[*Layout] {
 	if Exists(paramHtml) {
 		paramHtml, _ = FileToString(paramHtml)
 	}
-	c := &Layout{UUID: uid, Html: paramHtml, ChanIn: make(chan interface{}, 1), IntervalEventTime: time.Hour * 24}
-	MuLayout.Lock()
-	Layaouts[uid] = c
-	MuLayout.Unlock()
+	c := &Layout{UUID: uid, Html: paramHtml, CloseChan: make(chan bool), IntervalEventTime: time.Hour * 24}
+	func() {
+		MuLayout.Lock()
+		defer MuLayout.Unlock()
+		Layaouts[uid] = c
+	}()
+
 	fmt.Println("NewLayout", uid)
 	c.ComponentDriver = NewDriver(uid, c)
 
 	go func() {
-		firstTiem := true
+		firstTime := true
+		tickerFirstTime := time.NewTicker(250 * time.Millisecond)
+		tickerEventTime := time.NewTicker(c.IntervalEventTime)
+
+		defer func() {
+			tickerFirstTime.Stop()
+			tickerEventTime.Stop()
+		}()
+
 		for {
 			select {
-			case data := <-c.Component.ChanIn:
-				if c.HandlerEventIn != nil {
-					(*c.HandlerEventIn)(data)
-				}
-			case <-time.After(250 * time.Millisecond):
-				if c.HandlerFirstTime != nil {
-					if firstTiem {
-						firstTiem = false
+			case <-c.CloseChan:
+				fmt.Println("Cerrando Layout:", c.UUID)
+				firstTime = true
+				return
+
+			case <-tickerFirstTime.C:
+				if firstTime {
+					firstTime = false
+					if c.HandlerFirstTime != nil {
 						(*c.HandlerFirstTime)()
-					}
-				} else {
-					if firstTiem {
-						firstTiem = false
+					} else {
 						SendToAllLayouts("FIRST_TIME")
 					}
 				}
-			case <-time.After(c.IntervalEventTime):
+			case <-tickerEventTime.C:
 				if c.HandlerEventTime != nil {
 					(*c.HandlerEventTime)()
 				}

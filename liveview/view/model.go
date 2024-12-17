@@ -3,6 +3,7 @@ package view
 import (
 	"bytes"
 	"fmt"
+	"github.com/gofiber/websocket/v2"
 	"log"
 	"reflect"
 	"sync"
@@ -28,13 +29,13 @@ type Component interface {
 type LiveDriver interface {
 	GetID() string
 	SetID(string)
-	StartDriver(*map[string]LiveDriver, *map[string]chan interface{}, chan (map[string]interface{}))
+	StartDriver(*websocket.Conn, *map[string]LiveDriver, *map[string]chan interface{})
 	GetIDComponet() string
 	ExecuteEvent(name string, data interface{})
 
 	GetComponet() Component
 	Mount(component Component) LiveDriver
-	MountWithStart(id string, componentDriver LiveDriver) LiveDriver
+	MountWithStart(ws *websocket.Conn, id string, componentDriver LiveDriver) LiveDriver
 
 	Commit()
 	Remove(string)
@@ -73,7 +74,7 @@ type ComponentDriver[T Component] struct {
 	Component         T
 	id                string
 	IdComponent       string
-	channel           chan (map[string]interface{})
+	Conn              *websocket.Conn
 	componentsDrivers map[string]LiveDriver
 	DriversPage       *map[string]LiveDriver
 	channelIn         *map[string]chan interface{}
@@ -106,16 +107,16 @@ func (cw *ComponentDriver[T]) Commit() {
 	cw.FillValueById(cw.GetID(), buf.String())
 }
 
-func (cw *ComponentDriver[T]) StartDriver(drivers *map[string]LiveDriver, channelIn *map[string]chan interface{}, channel chan (map[string]interface{})) {
+func (cw *ComponentDriver[T]) StartDriver(ws *websocket.Conn, drivers *map[string]LiveDriver, channelIn *map[string]chan interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Println("Recovered in f", r)
 		}
 	}()
-	cw.channel = channel
-	cw.channelIn = channelIn
+	cw.Conn = ws
 	cw.Component.Start()
 	cw.DriversPage = drivers
+	cw.channelIn = channelIn
 	mu.Lock()
 	(*drivers)[cw.GetIDComponet()] = cw
 	mu.Unlock()
@@ -125,7 +126,7 @@ func (cw *ComponentDriver[T]) StartDriver(drivers *map[string]LiveDriver, channe
 		go func(c LiveDriver) {
 			defer HandleRecover()
 			defer wg.Done()
-			c.StartDriver(drivers, channelIn, channel)
+			c.StartDriver(ws, drivers, channelIn)
 		}(c)
 	}
 	wg.Wait()
@@ -169,10 +170,11 @@ func (cw *ComponentDriver[T]) Mount(component Component) LiveDriver {
 }
 
 // Mount mount component in other component"mount_span_" +
-func (cw *ComponentDriver[T]) MountWithStart(id string, componentDriver LiveDriver) LiveDriver {
+func (cw *ComponentDriver[T]) MountWithStart(ws *websocket.Conn, id string, componentDriver LiveDriver) LiveDriver {
 	componentDriver.SetID(id)
+	cw.Conn = ws
 	cw.componentsDrivers[id] = componentDriver
-	componentDriver.StartDriver(cw.DriversPage, cw.channelIn, cw.channel)
+	componentDriver.StartDriver(ws, cw.DriversPage, cw.channelIn)
 	return cw
 }
 
@@ -255,52 +257,52 @@ func (cw *ComponentDriver[T]) ExecuteEvent(name string, data interface{}) {
 
 // Remove
 func (cw *ComponentDriver[T]) Remove(id string) {
-	cw.channel <- map[string]interface{}{"type": "remove", "id": id}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "remove", "id": id})
 }
 
 // AddNode add node to id
 func (cw *ComponentDriver[T]) AddNode(id string, value string) {
-	cw.channel <- map[string]interface{}{"type": "addNode", "id": id, "value": value}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "addNode", "id": id, "value": value})
 }
 
 // FillValue is same SetHTML
 func (cw *ComponentDriver[T]) FillValueById(id string, value string) {
-	cw.channel <- map[string]interface{}{"type": "fill", "id": id, "value": value}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "fill", "id": id, "value": value})
 }
 
 // FillValue is same SetHTML
 func (cw *ComponentDriver[T]) FillValue(value string) {
-	cw.channel <- map[string]interface{}{"type": "fill", "id": cw.GetIDComponet(), "value": value}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "fill", "id": cw.GetIDComponet(), "value": value})
 }
 
 // SetHTML is same FillValue :p haha, execute  document.getElementById("$id").innerHTML = $value
 func (cw *ComponentDriver[T]) SetHTML(value string) {
-	cw.channel <- map[string]interface{}{"type": "fill", "id": cw.GetIDComponet(), "value": value}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "fill", "id": cw.GetIDComponet(), "value": value})
 }
 
 // SetText execute document.getElementById("$id").innerText = $value
 func (cw *ComponentDriver[T]) SetText(value string) {
-	cw.channel <- map[string]interface{}{"type": "text", "id": cw.GetIDComponet(), "value": value}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "text", "id": cw.GetIDComponet(), "value": value})
 }
 
 // SetPropertie execute  document.getElementById("$id")[$propertie] = $value
 func (cw *ComponentDriver[T]) SetPropertie(propertie string, value interface{}) {
-	cw.channel <- map[string]interface{}{"type": "propertie", "id": cw.GetIDComponet(), "propertie": propertie, "value": value}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "propertie", "id": cw.GetIDComponet(), "propertie": propertie, "value": value})
 }
 
 // SetValue execute document.getElementById("$id").value = $value|
 func (cw *ComponentDriver[T]) SetValue(value interface{}) {
-	cw.channel <- map[string]interface{}{"type": "set", "id": cw.GetIDComponet(), "value": value}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "set", "id": cw.GetIDComponet(), "value": value})
 }
 
 // EvalScript execute eval($code);
 func (cw *ComponentDriver[T]) EvalScript(code string) {
-	cw.channel <- map[string]interface{}{"type": "script", "value": code}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "script", "value": code})
 }
 
 // SetStyle execute  document.getElementById("$id").style.cssText = $style
 func (cw *ComponentDriver[T]) SetStyle(style string) {
-	cw.channel <- map[string]interface{}{"type": "style", "id": cw.GetIDComponet(), "value": style}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "style", "id": cw.GetIDComponet(), "value": style})
 }
 
 // GetElementById same as GetValue
@@ -337,7 +339,7 @@ func (cw *ComponentDriver[T]) get(id string, subType string, value string) strin
 	uid := uuid.NewString()
 	(*cw.channelIn)[uid] = make(chan interface{})
 	defer delete((*cw.channelIn), uid)
-	cw.channel <- map[string]interface{}{"type": "get", "id": id, "value": value, "id_ret": uid, "sub_type": subType}
+	cw.Conn.WriteJSON(map[string]interface{}{"type": "get", "id": id, "value": value, "id_ret": uid, "sub_type": subType})
 	data := <-(*cw.channelIn)[uid]
 	if data != nil {
 		return fmt.Sprint(data)
