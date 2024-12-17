@@ -137,13 +137,13 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 
 		// Iniciar driver en goroutine
 		go func() {
-			defer HandleReover()
+			defer HandleRecover()
 			content.StartDriver(&drivers, &channelIn, channel)
 		}()
 
 		// Goroutine para enviar mensajes al cliente
 		go func() {
-			defer HandleReover()
+			defer HandleRecover()
 			for {
 				select {
 				case data := <-channel:
@@ -188,20 +188,4 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 		end <- true
 
 	}))
-}
-
-func HandleReover() {
-	if r := recover(); r != nil {
-		fmt.Println("Recovered from error:", r)
-	}
-}
-
-func HandleReoverMsg(msg string) {
-	if r := recover(); r != nil {
-		fmt.Println(msg, ":", r)
-	}
-}
-
-func HandleReoverPass() {
-	recover()
 }

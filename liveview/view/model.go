@@ -123,7 +123,7 @@ func (cw *ComponentDriver[T]) StartDriver(drivers *map[string]LiveDriver, channe
 	for _, c := range cw.componentsDrivers {
 		wg.Add(1)
 		go func(c LiveDriver) {
-			defer HandleReover()
+			defer HandleRecover()
 			defer wg.Done()
 			c.StartDriver(drivers, channelIn, channel)
 		}(c)
@@ -230,7 +230,7 @@ func (cw *ComponentDriver[T]) ExecuteEvent(name string, data interface{}) {
 		return
 	}
 	go func(cw *ComponentDriver[T]) {
-		defer HandleReover()
+		defer HandleRecover()
 		if data == nil {
 			data = make(map[string]interface{})
 		}
@@ -238,14 +238,14 @@ func (cw *ComponentDriver[T]) ExecuteEvent(name string, data interface{}) {
 		if cw.Events != nil {
 			if fx, ok := cw.Events[name]; ok {
 				go func() {
-					defer HandleReover()
+					defer HandleRecover()
 					fx(cw.Component, data)
 				}()
 				return
 			}
 		}
 		func() {
-			defer HandleReoverPass()
+			defer HandleRecoverPass()
 			in := []reflect.Value{reflect.ValueOf(data)}
 			reflect.ValueOf(cw.Component).MethodByName(name).Call(in)
 		}()
