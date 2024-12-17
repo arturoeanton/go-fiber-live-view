@@ -1,4 +1,4 @@
-package liveview
+package view
 
 type None struct {
 	*ComponentDriver[*None]

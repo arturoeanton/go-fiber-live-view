@@ -11,9 +11,9 @@ func main() {
 	app := fiber.New()
 
 	home := view.PageControl{
-		Title: "Example1",
-		Path:  "/",
-		App:   app,
+		Title:  "Example1",
+		Path:   "/",
+		Router: app,
 	}
 
 	home.Register(func() view.LiveDriver {

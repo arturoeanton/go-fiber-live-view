@@ -1,14 +1,13 @@
-package liveview
+package view
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/websocket/v2"
 	"net/http"
 	"text/template"
-
-	"github.com/gorilla/websocket"
-	"github.com/labstack/echo/v4"
 )
 
 type PageControl struct {
@@ -19,7 +18,7 @@ type PageControl struct {
 	Css       string
 	LiveJs    string
 	AfterCode string
-	Router    *echo.Echo
+	Router    fiber.Router
 	Debug     bool
 }
 
@@ -65,26 +64,50 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 		pc.LiveJs, _ = FileToString("live.js")
 	}
 
-	pc.Router.Static("/assets", "assets")
-	pc.Router.GET(pc.Path, func(c echo.Context) error {
+	pc.Router.Get("/assets/:file", func(c *fiber.Ctx) error {
+		file := "../../liveview/assets/" + c.Params("file")
+
+		if Exists(file) {
+			if c.Params("file") == "json.wasm" {
+				c.Set("Content-Type", "application/wasm")
+			}
+			if c.Params("file") == "wasm_exec.js" {
+				c.Set("Content-Type", "application/javascript")
+			}
+
+			content, _ := FileToString(file)
+			return c.SendString(content)
+		}
+		return c.SendStatus(http.StatusNotFound)
+	})
+
+	pc.Router.Get(pc.Path, func(c *fiber.Ctx) error {
 		t := template.Must(template.New("page_control").Parse(templateBase))
 		buf := new(bytes.Buffer)
 		_ = t.Execute(buf, pc)
-		c.HTML(http.StatusOK, buf.String())
-
+		c.Set("Content-Type", "text/html; charset=utf-8")
+		e := c.SendString(buf.String())
+		if e != nil {
+			fmt.Println(e)
+		}
 		return nil
 	})
 
-	pc.Router.GET(pc.Path+"ws_goliveview", func(c echo.Context) error {
+	pc.Router.Get(pc.Path+"ws_goliveview", websocket.New(func(conn *websocket.Conn) {
 
 		content := fx()
+
+		// Cleanup y lógica de cierre
 		defer func() {
+			// Eliminar el layout del mapa global
 			func() {
 				MuLayout.Lock()
 				defer MuLayout.Unlock()
 				id := content.GetIDComponet()
 				delete(Layaouts, id)
 			}()
+
+			// Ejecutar el handler de destrucción si existe
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -99,55 +122,56 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 
 			fmt.Println("Delete Layout:", content.GetIDComponet())
 		}()
+
+		// Montar componentes
 		for _, v := range componentsDrivers {
 			content.Mount(v.GetComponet())
 		}
-
 		content.SetID("content")
-		//content.SetIDComponent("content")
 
+		// Canales
 		channel := make(chan (map[string]interface{}))
-		upgrader := websocket.Upgrader{}
-		ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
-		if err != nil {
-			return err
-		}
-		defer ws.Close()
-
 		drivers := make(map[string]LiveDriver)
 		channelIn := make(map[string](chan interface{}))
+		end := make(chan bool)
 
+		// Iniciar driver en goroutine
 		go func() {
 			defer HandleReover()
 			content.StartDriver(&drivers, &channelIn, channel)
 		}()
-		end := make(chan bool)
-		defer func() {
-			end <- true
-		}()
+
+		// Goroutine para enviar mensajes al cliente
 		go func() {
 			defer HandleReover()
 			for {
 				select {
 				case data := <-channel:
-					ws.WriteJSON(data)
+					if err := conn.WriteJSON(data); err != nil {
+						fmt.Println("Error enviando mensaje:", err)
+						return
+					}
 				case <-end:
 					return
 				}
 			}
 		}()
 
+		// Leer mensajes del cliente
 		for {
-			_, msg, err := ws.ReadMessage()
+			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				//c.Logger().Error(err)
-				return nil
+				fmt.Println("Error leyendo mensaje:", err)
+				break
 			}
-			if pc.Debug {
-				fmt.Println(string(msg))
-			}
+
 			var data map[string]interface{}
-			json.Unmarshal(msg, &data)
+			if err := json.Unmarshal(msg, &data); err != nil {
+				fmt.Println("Error al deserializar JSON:", err)
+				continue
+			}
+
+			// Procesar mensajes
 			if mtype, ok := data["type"]; ok {
 				if mtype == "data" {
 					param := data["data"]
@@ -159,5 +183,25 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 				}
 			}
 		}
-	})
+
+		// Cerrar el canal al terminar
+		end <- true
+
+	}))
+}
+
+func HandleReover() {
+	if r := recover(); r != nil {
+		fmt.Println("Recovered from error:", r)
+	}
+}
+
+func HandleReoverMsg(msg string) {
+	if r := recover(); r != nil {
+		fmt.Println(msg, ":", r)
+	}
+}
+
+func HandleReoverPass() {
+	recover()
 }

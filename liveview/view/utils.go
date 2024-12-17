@@ -1,7 +1,6 @@
-package liveview
+package view
 
 import (
-	"io/ioutil"
 	"os"
 )
 
@@ -22,12 +21,12 @@ func Exists(name string) bool {
 }
 
 func FileToString(name string) (string, error) {
-	content, err := ioutil.ReadFile(name)
+	content, err := os.ReadFile(name)
 	return string(content), err
 }
 
 func StringToFile(filenanme string, content string) error {
 	d1 := []byte(content)
-	err := ioutil.WriteFile(filenanme, d1, 0644)
+	err := os.WriteFile(filenanme, d1, 0644)
 	return err
 }

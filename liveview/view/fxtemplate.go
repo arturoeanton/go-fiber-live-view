@@ -1,4 +1,4 @@
-package liveview
+package view
 
 import (
 	"text/template"
