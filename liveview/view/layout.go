@@ -11,14 +11,14 @@ import (
 
 type Layout struct {
 	*ComponentDriver[*Layout]
-	UUID                string
-	Html                string
-	CloseChan           chan bool
-	HandlerEventIn      *func(data interface{})
-	HandlerEventTime    *func()
-	HandlerEventDestroy *func(id string)
-	HandlerFirstTime    *func()
-	IntervalEventTime   time.Duration
+	UUID                   string
+	Html                   string
+	HandlerEventIn         func(data interface{})
+	HandlerEventTime       func()
+	HandlerEventDestroy    func(id string)
+	HandlerInternalDestroy func()
+	HandlerFirstTime       func()
+	IntervalEventTime      time.Duration
 }
 
 func (t *Layout) GetDriver() LiveDriver {
@@ -26,40 +26,32 @@ func (t *Layout) GetDriver() LiveDriver {
 }
 
 var (
-	MuLayout sync.Mutex         = sync.Mutex{}
+	MuLayout sync.RWMutex = sync.RWMutex{}
+
 	Layaouts map[string]*Layout = make(map[string]*Layout)
 )
 
 func DeleteLayout(uid string) {
 	MuLayout.Lock()
 	defer MuLayout.Unlock()
-	if layout, ok := Layaouts[uid]; ok {
-
-		// Cerrar el canal CloseChan de forma segura
-		select {
-		case <-layout.CloseChan:
-			// Ya está cerrado, no hacer nada
-		default:
-			close(layout.CloseChan)
-			fmt.Println("Canal CloseChan cerrado correctamente")
-		}
-
-		// Eliminar el layout del mapa
+	if _, ok := Layaouts[uid]; ok {
 		delete(Layaouts, uid)
 		fmt.Println("Layout eliminado:", uid)
 	}
 }
 
 func SendToAllLayouts(msg interface{}) {
-	MuLayout.Lock() // Lectura segura
+	MuLayout.RLock() // Lectura concurrente segura
 	layoutsCopy := make([]*Layout, 0, len(Layaouts))
 	for _, v := range Layaouts {
 		layoutsCopy = append(layoutsCopy, v)
 	}
-	MuLayout.Unlock() // Liberar bloqueo antes de operar en goroutines
+	MuLayout.RUnlock() // Liberar el bloqueo antes de operar
 
 	for _, v := range layoutsCopy {
-		(*v.HandlerEventIn)(msg)
+
+		v.HandlerEventIn(msg)
+
 	}
 }
 func SendToLayouts(msg interface{}, uuids ...string) {
@@ -75,24 +67,53 @@ func SendToLayouts(msg interface{}, uuids ...string) {
 	}()
 
 	for _, v := range layoutsCopy {
-		(*v.HandlerEventIn)(msg)
+		v.HandlerEventIn(msg)
 	}
 }
 
 func NewLayout(uid string, paramHtml string) *ComponentDriver[*Layout] {
+	quit := make(chan struct{})
+	// Verificar si el layout ya existe
+	MuLayout.RLock()
+	if existingLayout, exists := Layaouts[uid]; exists {
+		MuLayout.RUnlock()
+		fmt.Println("Layout ya existe:", uid)
+		return existingLayout.ComponentDriver
+	}
+	MuLayout.RUnlock()
+
+	// Si no existe, crear un nuevo layout
 	if Exists(paramHtml) {
 		paramHtml, _ = FileToString(paramHtml)
 	}
-	c := &Layout{UUID: uid, Html: paramHtml, CloseChan: make(chan bool), IntervalEventTime: time.Hour * 24}
-	func() {
-		MuLayout.Lock()
-		defer MuLayout.Unlock()
-		Layaouts[uid] = c
-	}()
+
+	c := &Layout{
+		UUID:              uid,
+		Html:              paramHtml,
+		IntervalEventTime: time.Hour * 24,
+		HandlerFirstTime: func() {
+			SendToLayouts("FIRST_TIME", uid)
+		},
+		HandlerEventIn: func(data interface{}) {
+
+		},
+		HandlerEventDestroy: func(id string) {
+
+		},
+		HandlerInternalDestroy: func() {
+			close(quit)
+		},
+	}
+
+	// Guardar el nuevo layout en el mapa de layouts
+	MuLayout.Lock()
+	Layaouts[uid] = c
+	MuLayout.Unlock()
 
 	fmt.Println("NewLayout", uid)
 	c.ComponentDriver = NewDriver(uid, c)
 
+	// Iniciar la goroutine para eventos
 	go func() {
 		firstTime := true
 		tickerFirstTime := time.NewTicker(250 * time.Millisecond)
@@ -105,31 +126,29 @@ func NewLayout(uid string, paramHtml string) *ComponentDriver[*Layout] {
 
 		for {
 			select {
-			case <-c.CloseChan:
-				fmt.Println("Cerrando Layout:", c.UUID)
-				firstTime = true
+			case <-quit:
 				return
-
 			case <-tickerFirstTime.C:
 				if firstTime {
 					firstTime = false
 					if c.HandlerFirstTime != nil {
-						(*c.HandlerFirstTime)()
+						c.HandlerFirstTime()
 					} else {
 						SendToAllLayouts("FIRST_TIME")
 					}
 				}
 			case <-tickerEventTime.C:
-				if c.HandlerEventTime != nil {
-					(*c.HandlerEventTime)()
-				}
+				c.HandlerEventTime()
+
 			}
 		}
 	}()
 
+	// Parsear HTML para detectar elementos con ID
 	doc, err := html.Parse(strings.NewReader(paramHtml))
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("Error parsing HTML:", err)
+		return c.ComponentDriver
 	}
 	var f func(*html.Node)
 	f = func(n *html.Node) {
@@ -151,19 +170,19 @@ func NewLayout(uid string, paramHtml string) *ComponentDriver[*Layout] {
 }
 
 func (t *Layout) SetHandlerFirstTime(fx func()) {
-	t.HandlerFirstTime = &fx
+	t.HandlerFirstTime = fx
 }
 func (t *Layout) SetHandlerEventIn(fx func(data interface{})) {
-	t.HandlerEventIn = &fx
+	t.HandlerEventIn = fx
 }
 
 func (t *Layout) SetHandlerEventTime(IntervalEventTime time.Duration, fx func()) {
 	t.IntervalEventTime = IntervalEventTime
-	t.HandlerEventTime = &fx
+	t.HandlerEventTime = fx
 }
 
 func (t *Layout) SetHandlerEventDestroy(fx func(id string)) {
-	t.HandlerEventDestroy = &fx
+	t.HandlerEventDestroy = fx
 }
 func (t *Layout) Start() {
 	t.Commit()

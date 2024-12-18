@@ -15,6 +15,7 @@ import (
 var (
 	componentsDrivers map[string]LiveDriver = make(map[string]LiveDriver)
 	mu                sync.Mutex
+	muws              sync.Mutex = sync.Mutex{}
 )
 
 // Component it is interface for implement one component
@@ -257,51 +258,71 @@ func (cw *ComponentDriver[T]) ExecuteEvent(name string, data interface{}) {
 
 // Remove
 func (cw *ComponentDriver[T]) Remove(id string) {
+	muws.Lock()
+	defer muws.Unlock()
 	cw.Conn.WriteJSON(map[string]interface{}{"type": "remove", "id": id})
 }
 
 // AddNode add node to id
 func (cw *ComponentDriver[T]) AddNode(id string, value string) {
+	muws.Lock()
+	defer muws.Unlock()
 	cw.Conn.WriteJSON(map[string]interface{}{"type": "addNode", "id": id, "value": value})
 }
 
 // FillValue is same SetHTML
 func (cw *ComponentDriver[T]) FillValueById(id string, value string) {
+	muws.Lock()
+	defer muws.Unlock()
 	cw.Conn.WriteJSON(map[string]interface{}{"type": "fill", "id": id, "value": value})
 }
 
 // FillValue is same SetHTML
 func (cw *ComponentDriver[T]) FillValue(value string) {
+	muws.Lock()
+	defer muws.Unlock()
 	cw.Conn.WriteJSON(map[string]interface{}{"type": "fill", "id": cw.GetIDComponet(), "value": value})
 }
 
 // SetHTML is same FillValue :p haha, execute  document.getElementById("$id").innerHTML = $value
 func (cw *ComponentDriver[T]) SetHTML(value string) {
+	muws.Lock()
+	defer muws.Unlock()
 	cw.Conn.WriteJSON(map[string]interface{}{"type": "fill", "id": cw.GetIDComponet(), "value": value})
 }
 
 // SetText execute document.getElementById("$id").innerText = $value
 func (cw *ComponentDriver[T]) SetText(value string) {
+	muws.Lock()
+	defer muws.Unlock()
 	cw.Conn.WriteJSON(map[string]interface{}{"type": "text", "id": cw.GetIDComponet(), "value": value})
 }
 
 // SetPropertie execute  document.getElementById("$id")[$propertie] = $value
 func (cw *ComponentDriver[T]) SetPropertie(propertie string, value interface{}) {
+	muws.Lock()
+	defer muws.Unlock()
 	cw.Conn.WriteJSON(map[string]interface{}{"type": "propertie", "id": cw.GetIDComponet(), "propertie": propertie, "value": value})
 }
 
 // SetValue execute document.getElementById("$id").value = $value|
 func (cw *ComponentDriver[T]) SetValue(value interface{}) {
+	muws.Lock()
+	defer muws.Unlock()
 	cw.Conn.WriteJSON(map[string]interface{}{"type": "set", "id": cw.GetIDComponet(), "value": value})
 }
 
 // EvalScript execute eval($code);
 func (cw *ComponentDriver[T]) EvalScript(code string) {
+	muws.Lock()
+	defer muws.Unlock()
 	cw.Conn.WriteJSON(map[string]interface{}{"type": "script", "value": code})
 }
 
 // SetStyle execute  document.getElementById("$id").style.cssText = $style
 func (cw *ComponentDriver[T]) SetStyle(style string) {
+	muws.Lock()
+	defer muws.Unlock()
 	cw.Conn.WriteJSON(map[string]interface{}{"type": "style", "id": cw.GetIDComponet(), "value": style})
 }
 
@@ -332,10 +353,13 @@ func (cw *ComponentDriver[T]) GetText() string {
 
 // GetPropertie return document.getElementById("$id")[$propertie]
 func (cw *ComponentDriver[T]) GetPropertie(name string) string {
+
 	return cw.get(cw.GetIDComponet(), "propertie", name)
 }
 
 func (cw *ComponentDriver[T]) get(id string, subType string, value string) string {
+	muws.Lock()
+	defer muws.Unlock()
 	uid := uuid.NewString()
 	(*cw.channelIn)[uid] = make(chan interface{})
 	defer delete((*cw.channelIn), uid)

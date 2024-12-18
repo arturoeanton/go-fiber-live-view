@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
 	"net/http"
+	"sync"
 	"text/template"
 )
 
@@ -23,6 +24,8 @@ type PageControl struct {
 }
 
 var (
+	muDriver     sync.Mutex
+	muChannelIn  sync.Mutex
 	templateBase string = `
 <html lang="{{.Lang}}">
 	<head>
@@ -112,10 +115,10 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 						fmt.Println("Layout has not HandlerEventDestroy method defined", r)
 					}
 				}()
-				handlerEventDestroy := (content.GetComponet().(*Layout)).HandlerEventDestroy
-				if handlerEventDestroy != nil {
-					(*handlerEventDestroy)(content.GetIDComponet())
-				}
+
+				//Destroy component
+				(content.GetComponet().(*Layout)).HandlerEventDestroy(content.GetIDComponet())
+				(content.GetComponet().(*Layout)).HandlerInternalDestroy()
 			}()
 
 			fmt.Println("Delete Layout:", content.GetIDComponet())
@@ -131,24 +134,15 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 
 		drivers := make(map[string]LiveDriver)
 		channelIn := make(map[string](chan interface{}))
-		end := make(chan bool)
 
 		// Iniciar driver en goroutine
 		go func() {
 			defer HandleRecover()
+			muChannelIn.Lock()
+			defer muChannelIn.Unlock()
+			muDriver.Lock()
+			defer muDriver.Unlock()
 			content.StartDriver(conn, &drivers, &channelIn)
-		}()
-
-		// Goroutine para enviar mensajes al cliente
-		go func() {
-			defer HandleRecover()
-			for {
-				select {
-
-				case <-end:
-					return
-				}
-			}
 		}()
 
 		// Leer mensajes del cliente
@@ -167,19 +161,24 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 
 			// Procesar mensajes
 			if mtype, ok := data["type"]; ok {
+				param := data["data"]
 				if mtype == "data" {
-					param := data["data"]
-					drivers[data["id"].(string)].ExecuteEvent(data["event"].(string), param)
+					func() {
+						muDriver.Lock()
+						defer muDriver.Unlock()
+						drivers[data["id"].(string)].ExecuteEvent(data["event"].(string), param)
+					}()
 				}
 				if mtype == "get" {
-					param := data["data"]
-					channelIn[data["id_ret"].(string)] <- param
+					func() {
+						muChannelIn.Lock()
+						defer muChannelIn.Unlock()
+						channelIn[data["id_ret"].(string)] <- param
+					}()
+
 				}
 			}
 		}
-
-		// Cerrar el canal al terminar
-		end <- true
 
 	}))
 }
