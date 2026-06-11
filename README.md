@@ -69,6 +69,7 @@ pueden correr todos a la vez:
 | `go run ./06_chat` | 💬 **LiveChat** | Salas, privados, typing, unread, historial |
 | `go run ./07_board` | 🎨 **Board** | Pizarra colaborativa estilo Excalidraw con SQLite |
 | `go run ./08_notion` | 🪶 **GoNotion** | Workspace estilo Notion: bloques, páginas anidadas, colaborativo |
+| `go run ./09_pad` | ✍️ **Pad** | Co-edición carácter-por-carácter con CRDT transparente |
 
 El chat (`06_chat`) es el ejemplo estrella: salas múltiples con contadores de
 no-leídos, lista de usuarios online, mensajes privados (`@nick hola` o click
@@ -164,6 +165,33 @@ view.SendToAllLayouts("MSG")            // broadcast a todas las sesiones
 view.SendToLayouts("MSG", id1, id2)     // broadcast dirigido
 ```
 
+## Texto colaborativo con CRDT (transparente)
+
+Para co-edición carácter-por-carácter (estilo Google Docs) el framework trae
+soporte CRDT integrado. Tres líneas de Go y un atributo:
+
+```go
+doc := view.NewSharedText("mi-doc", "texto inicial")
+doc.OnChange(func(texto string) { /* guardar, indexar, etc. */ })
+texto := doc.Text()        // leer
+doc.SetText("nuevo")       // escribir desde el servidor (manda el diff mínimo)
+```
+
+```html
+<textarea live-text="mi-doc"></textarea>   <!-- o un <input> -->
+```
+
+El cliente WASM detecta `live-text`, pide el snapshot y mantiene una réplica
+local del documento. Cada tecla se aplica localmente **sin latencia**, viaja
+como operación CRDT y se mergea en todas las réplicas; el cursor se preserva
+cuando llegan cambios remotos. Dos personas pueden tipear en la misma palabra
+sin pisarse.
+
+El CRDT es un RGA (Roh et al.) con relojes de Lamport y tombstones, en el
+paquete `liveview/crdt` — **el mismo código Go corre en el servidor y en el
+browser** (compilado a WASM), así que ambos lados convergen por construcción.
+Probalo con `go run ./09_pad`.
+
 ## Estructura del proyecto
 
 ```
@@ -171,6 +199,7 @@ view.SendToLayouts("MSG", id1, id2)     // broadcast dirigido
 ├── liveview/           # La librería
 │   ├── view/           # Core: drivers, layouts, páginas, websocket
 │   ├── components/     # Biblioteca de componentes
+│   ├── crdt/           # CRDT de secuencia (RGA) — compartido server/browser
 │   └── assets/         # wasm + runtime + css (embebidos con go:embed)
 ├── wasm/               # Código fuente del cliente WebAssembly
 ├── examples/           # 6 ejemplos listos para correr

@@ -10,5 +10,5 @@ if [ ! -f "$WASM_EXEC" ]; then
 fi
 
 cp "$WASM_EXEC" ../liveview/assets/
-GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o ../liveview/assets/json.wasm
+GOWORK=off GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o ../liveview/assets/json.wasm
 echo "wasm client built -> liveview/assets/json.wasm"

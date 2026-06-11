@@ -116,6 +116,7 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 		muRegister.Unlock()
 
 		defer func() {
+			unsubscribeConn(conn)
 			DeleteLayout(content.GetIDComponet())
 			func() {
 				defer HandleRecoverPass()
@@ -179,6 +180,8 @@ func (pc *PageControl) Register(fx func() LiveDriver) {
 					default:
 					}
 				}
+			case "crdt":
+				handleCrdt(conn, msg)
 			}
 		}
 		conn.Close()

@@ -54,6 +54,7 @@ func connect() {
 	loc = window.Get("location")
 	uri = "ws:"
 	protocol = loc.Get("protocol").String()
+	liveTexts = map[string]*liveTextBinding{} // new socket: re-snapshot docs
 
 	fmt.Println("Go Web LiveView")
 	if protocol == "https:" {
@@ -93,6 +94,12 @@ func connect() {
 			return nil
 		}
 
+		// shared-text (CRDT) traffic
+		if dataEventIn.Type == "crdt" {
+			handleCrdtMsg(evtData)
+			return nil
+		}
+
 		currentElement := document.Call("getElementById", dataEventIn.ID)
 
 		if currentElement.IsNull() {
@@ -101,6 +108,7 @@ func connect() {
 
 		if dataEventIn.Type == "fill" {
 			currentElement.Set("innerHTML", dataEventIn.Value)
+			bindLiveTexts()
 			return nil
 		}
 
