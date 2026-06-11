@@ -68,6 +68,7 @@ pueden correr todos a la vez:
 | `go run ./05_dashboard` | Dashboard | Métricas en vivo cada segundo |
 | `go run ./06_chat` | 💬 **LiveChat** | Salas, privados, typing, unread, historial |
 | `go run ./07_board` | 🎨 **Board** | Pizarra colaborativa estilo Excalidraw con SQLite |
+| `go run ./08_notion` | 🪶 **GoNotion** | Workspace estilo Notion: bloques, páginas anidadas, colaborativo |
 
 El chat (`06_chat`) es el ejemplo estrella: salas múltiples con contadores de
 no-leídos, lista de usuarios online, mensajes privados (`@nick hola` o click
@@ -79,6 +80,13 @@ formas, flechas, texto y goma; selección y arrastre, undo (Ctrl+Z), zoom y
 pan, export a SVG, cursores remotos con nombre en vivo y múltiples tableros
 persistidos en SQLite (driver Go puro, sin cgo). El SVG se renderiza completo
 en el servidor.
+
+GoNotion (`08_notion`) es un workspace estilo Notion: páginas anidadas con
+iconos, editor de bloques (títulos, todos, listas, citas, código, callouts,
+imágenes y tablas), atajos markdown (`# `, `- `, `[] `…) y comandos `/`,
+drag & drop de bloques, y colaboración en vivo a nivel bloque — con badge de
+quién está editando cada bloque y avatares de presencia, igual que Notion.
+Todo persistido en SQLite.
 
 ## Componentes incluidos
 

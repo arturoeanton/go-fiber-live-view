@@ -13,6 +13,7 @@ go run ./04_todo        # http://localhost:3004
 go run ./05_dashboard   # http://localhost:3005
 go run ./06_chat        # http://localhost:3006
 go run ./07_board       # http://localhost:3007
+go run ./08_notion      # http://localhost:3008
 ```
 
 Each example uses its own port, so you can run all of them at the same time.
@@ -26,6 +27,7 @@ Each example uses its own port, so you can run all of them at the same time.
 | **05_dashboard** | Periodic server-side updates with `SetHandlerEventTime`: live metrics, progress bars and a request table. |
 | **06_chat** | 💬 **The showcase.** Multi-room chat with online users, private messages (`@nick hi` or click a user), typing indicator, unread counters, message history, emojis and system messages. |
 | **07_board** | 🎨 **Excalidraw-style whiteboard.** Pen, shapes, arrows, text and eraser; select/move, undo, zoom/pan, SVG export; live collaboration with remote cursors; multiple boards persisted in SQLite (`board.db`). |
+| **08_notion** | 🪶 **Notion-style workspace.** Nested pages, block editor (headings, todos, lists, quotes, code, callouts, images, tables) with markdown shortcuts and "/" commands, drag & drop, block-level live collaboration with editing badges and presence avatars. SQLite (`notion.db`). |
 
 ## Tips
 
