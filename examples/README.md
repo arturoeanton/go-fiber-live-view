@@ -12,6 +12,7 @@ go run ./03_gallery     # http://localhost:3003
 go run ./04_todo        # http://localhost:3004
 go run ./05_dashboard   # http://localhost:3005
 go run ./06_chat        # http://localhost:3006
+go run ./07_board       # http://localhost:3007
 ```
 
 Each example uses its own port, so you can run all of them at the same time.
@@ -24,6 +25,7 @@ Each example uses its own port, so you can run all of them at the same time.
 | **04_todo** | Collaborative todo list: state shared between sessions, broadcast with `SendToAllLayouts`. Open two browsers and watch them sync. |
 | **05_dashboard** | Periodic server-side updates with `SetHandlerEventTime`: live metrics, progress bars and a request table. |
 | **06_chat** | 💬 **The showcase.** Multi-room chat with online users, private messages (`@nick hi` or click a user), typing indicator, unread counters, message history, emojis and system messages. |
+| **07_board** | 🎨 **Excalidraw-style whiteboard.** Pen, shapes, arrows, text and eraser; select/move, undo, zoom/pan, SVG export; live collaboration with remote cursors; multiple boards persisted in SQLite (`board.db`). |
 
 ## Tips
 

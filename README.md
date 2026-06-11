@@ -67,11 +67,18 @@ pueden correr todos a la vez:
 | `go run ./04_todo` | Todo colaborativo | Estado compartido entre browsers |
 | `go run ./05_dashboard` | Dashboard | Métricas en vivo cada segundo |
 | `go run ./06_chat` | 💬 **LiveChat** | Salas, privados, typing, unread, historial |
+| `go run ./07_board` | 🎨 **Board** | Pizarra colaborativa estilo Excalidraw con SQLite |
 
 El chat (`06_chat`) es el ejemplo estrella: salas múltiples con contadores de
 no-leídos, lista de usuarios online, mensajes privados (`@nick hola` o click
 en un usuario), indicador "está escribiendo…", historial con timestamps,
 emojis y mensajes de sistema. Todo renderizado desde Go.
+
+El board (`07_board`) es una pizarra colaborativa estilo Excalidraw: lápiz,
+formas, flechas, texto y goma; selección y arrastre, undo (Ctrl+Z), zoom y
+pan, export a SVG, cursores remotos con nombre en vivo y múltiples tableros
+persistidos en SQLite (driver Go puro, sin cgo). El SVG se renderiza completo
+en el servidor.
 
 ## Componentes incluidos
 

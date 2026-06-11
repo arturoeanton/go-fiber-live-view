@@ -91,6 +91,15 @@ type ComponentDriver[T Component] struct {
 	// Events has rewrite of our implementings of  events, examples click, change, keyup, keydown, etc
 	Events map[string]func(c T, data interface{})
 	Data   interface{}
+
+	evMu    sync.Mutex
+	evQueue []eventCall
+	evBusy  bool
+}
+
+type eventCall struct {
+	name string
+	data interface{}
 }
 
 func (cw *ComponentDriver[T]) SetEvent(name string, fx func(c T, data interface{})) {
@@ -249,30 +258,55 @@ func newDriver[T Component](c T) *ComponentDriver[T] {
 	return driver
 }
 
-// ExecuteEvent execute events
+// ExecuteEvent runs an event handler asynchronously. Events of the same
+// driver are processed strictly in arrival order (one FIFO mailbox per
+// driver, like a LiveView process), so high-frequency sequences such as
+// pointer down/move/up never interleave. The page read-loop is never
+// blocked, and handlers can still call GetValue & friends safely.
 func (cw *ComponentDriver[T]) ExecuteEvent(name string, data interface{}) {
 	if cw == nil {
 		return
 	}
-	go func(cw *ComponentDriver[T]) {
-		defer HandleRecover()
-		if data == nil {
-			data = make(map[string]interface{})
-		}
-
-		if cw.Events != nil {
-			if fx, ok := cw.Events[name]; ok {
-				fx(cw.Component, data)
+	cw.evMu.Lock()
+	cw.evQueue = append(cw.evQueue, eventCall{name: name, data: data})
+	if cw.evBusy {
+		cw.evMu.Unlock()
+		return
+	}
+	cw.evBusy = true
+	cw.evMu.Unlock()
+	go func() {
+		for {
+			cw.evMu.Lock()
+			if len(cw.evQueue) == 0 {
+				cw.evBusy = false
+				cw.evMu.Unlock()
 				return
 			}
+			ev := cw.evQueue[0]
+			cw.evQueue = cw.evQueue[1:]
+			cw.evMu.Unlock()
+			cw.runEvent(ev.name, ev.data)
 		}
-		func() {
-			defer HandleRecoverPass()
-			in := []reflect.Value{reflect.ValueOf(data)}
-			reflect.ValueOf(cw.Component).MethodByName(name).Call(in)
-		}()
+	}()
+}
 
-	}(cw)
+func (cw *ComponentDriver[T]) runEvent(name string, data interface{}) {
+	defer HandleRecover()
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	if cw.Events != nil {
+		if fx, ok := cw.Events[name]; ok {
+			fx(cw.Component, data)
+			return
+		}
+	}
+	func() {
+		defer HandleRecoverPass()
+		in := []reflect.Value{reflect.ValueOf(data)}
+		reflect.ValueOf(cw.Component).MethodByName(name).Call(in)
+	}()
 }
 
 // Remove removes the DOM node with the given id
