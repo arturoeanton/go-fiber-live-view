@@ -86,6 +86,13 @@ func connect() {
 		evtData := args[0].Get("data").String()
 		var dataEventIn DataEventIn
 		json.Unmarshal([]byte(evtData), &dataEventIn)
+
+		// "script" messages carry no target element: eval them globally.
+		if dataEventIn.Type == "script" {
+			js.Global().Call("eval", fmt.Sprint(dataEventIn.Value))
+			return nil
+		}
+
 		currentElement := document.Call("getElementById", dataEventIn.ID)
 
 		if currentElement.IsNull() {
@@ -93,7 +100,6 @@ func connect() {
 		}
 
 		if dataEventIn.Type == "fill" {
-			fmt.Println("fill")
 			currentElement.Set("innerHTML", dataEventIn.Value)
 			return nil
 		}
@@ -120,10 +126,6 @@ func connect() {
 
 		if dataEventIn.Type == "set" {
 			currentElement.Set("value", dataEventIn.Value)
-		}
-
-		if dataEventIn.Type == "script" {
-			currentElement.Call("eval", dataEventIn.Value)
 		}
 
 		if dataEventIn.Type == "propertie" {

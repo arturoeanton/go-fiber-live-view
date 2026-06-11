@@ -3,11 +3,11 @@ package view
 import (
 	"bytes"
 	"fmt"
-	"github.com/gofiber/websocket/v2"
 	"log"
 	"reflect"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -15,7 +15,16 @@ import (
 var (
 	componentsDrivers map[string]LiveDriver = make(map[string]LiveDriver)
 	mu                sync.Mutex
-	muws              sync.Mutex = sync.Mutex{}
+	muChannel         sync.Mutex
+
+	// templateCache avoids re-parsing the component template on every Commit.
+	templateCache sync.Map // template source -> *template.Template
+	bufPool       = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
+
+	// getTimeout bounds how long a server->browser query (GetValue, GetHTML,
+	// ...) waits before giving up, so handlers never leak goroutines when the
+	// browser disconnects mid-request.
+	getTimeout = 5 * time.Second
 )
 
 // Component it is interface for implement one component
@@ -30,13 +39,13 @@ type Component interface {
 type LiveDriver interface {
 	GetID() string
 	SetID(string)
-	StartDriver(*websocket.Conn, *map[string]LiveDriver, *map[string]chan interface{})
+	StartDriver(*Conn, *map[string]LiveDriver, *map[string]chan interface{})
 	GetIDComponet() string
 	ExecuteEvent(name string, data interface{})
 
 	GetComponet() Component
 	Mount(component Component) LiveDriver
-	MountWithStart(ws *websocket.Conn, id string, componentDriver LiveDriver) LiveDriver
+	MountWithStart(conn *Conn, id string, componentDriver LiveDriver) LiveDriver
 
 	Commit()
 	Remove(string)
@@ -75,7 +84,7 @@ type ComponentDriver[T Component] struct {
 	Component         T
 	id                string
 	IdComponent       string
-	Conn              *websocket.Conn
+	Conn              *Conn
 	componentsDrivers map[string]LiveDriver
 	DriversPage       *map[string]LiveDriver
 	channelIn         *map[string]chan interface{}
@@ -92,53 +101,62 @@ func (cw *ComponentDriver[T]) GetIDComponet() string {
 	return cw.IdComponent
 }
 
-// Commit render of component
+// Commit renders the component template and pushes the resulting HTML to the
+// browser. Templates are parsed once and cached.
 func (cw *ComponentDriver[T]) Commit() {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Println("Recovered in Commit:", r)
 		}
 	}()
-	t := template.Must(template.New("component").Funcs(FuncMapTemplate).Parse(cw.Component.GetTemplate()))
-	buf := new(bytes.Buffer)
-	err := t.Execute(buf, cw.Component)
-	if err != nil {
-		log.Println(err)
+	t := cw.template()
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+	if err := t.Execute(buf, cw.Component); err != nil {
+		log.Println("liveview: error rendering", cw.IdComponent, ":", err)
+		return
 	}
 	cw.FillValueById(cw.GetID(), buf.String())
 }
 
-func (cw *ComponentDriver[T]) StartDriver(ws *websocket.Conn, drivers *map[string]LiveDriver, channelIn *map[string]chan interface{}) {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Println("Recovered in f", r)
-		}
-	}()
-	cw.Conn = ws
-	cw.Component.Start()
+func (cw *ComponentDriver[T]) template() *template.Template {
+	src := cw.Component.GetTemplate()
+	if t, ok := templateCache.Load(src); ok {
+		return t.(*template.Template)
+	}
+	t := template.Must(template.New("component").Funcs(FuncMapTemplate).Parse(src))
+	templateCache.Store(src, t)
+	return t
+}
+
+func (cw *ComponentDriver[T]) StartDriver(conn *Conn, drivers *map[string]LiveDriver, channelIn *map[string]chan interface{}) {
+	defer HandleRecover()
+	cw.Conn = conn
 	cw.DriversPage = drivers
 	cw.channelIn = channelIn
 	mu.Lock()
 	(*drivers)[cw.GetIDComponet()] = cw
 	mu.Unlock()
+	cw.Component.Start()
 	var wg sync.WaitGroup
 	for _, c := range cw.componentsDrivers {
 		wg.Add(1)
 		go func(c LiveDriver) {
 			defer HandleRecover()
 			defer wg.Done()
-			c.StartDriver(ws, drivers, channelIn)
+			c.StartDriver(conn, drivers, channelIn)
 		}(c)
 	}
 	wg.Wait()
 }
 
-// GetID return id of driver
+// GetComponet return component of driver
 func (cw *ComponentDriver[T]) GetComponet() Component {
 	return cw.Component
 }
 
-// GetID return id of driver
+// GetDriverById return driver of component by id
 func (cw *ComponentDriver[T]) GetDriverById(id string) LiveDriver {
 	if c, ok := cw.componentsDrivers["mount_span_"+id]; ok {
 		return c
@@ -148,6 +166,8 @@ func (cw *ComponentDriver[T]) GetDriverById(id string) LiveDriver {
 	}
 	c := &None{}
 	New(id, c)
+	c.ComponentDriver.Conn = cw.Conn
+	c.ComponentDriver.channelIn = cw.channelIn
 	return c
 }
 
@@ -170,12 +190,12 @@ func (cw *ComponentDriver[T]) Mount(component Component) LiveDriver {
 	return cw
 }
 
-// Mount mount component in other component"mount_span_" +
-func (cw *ComponentDriver[T]) MountWithStart(ws *websocket.Conn, id string, componentDriver LiveDriver) LiveDriver {
+// MountWithStart mount component in other component and start his driver
+func (cw *ComponentDriver[T]) MountWithStart(conn *Conn, id string, componentDriver LiveDriver) LiveDriver {
 	componentDriver.SetID(id)
-	cw.Conn = ws
+	cw.Conn = conn
 	cw.componentsDrivers[id] = componentDriver
-	componentDriver.StartDriver(ws, cw.DriversPage, cw.channelIn)
+	componentDriver.StartDriver(conn, cw.DriversPage, cw.channelIn)
 	return cw
 }
 
@@ -190,7 +210,9 @@ func New[T Component](id string, c T) T {
 	componentDriver := c.GetDriver()
 	idMount := "mount_span_" + componentDriver.GetIDComponet()
 	componentDriver.SetID(idMount)
+	mu.Lock()
 	componentsDrivers[idMount] = componentDriver
+	mu.Unlock()
 	return c
 }
 
@@ -240,10 +262,7 @@ func (cw *ComponentDriver[T]) ExecuteEvent(name string, data interface{}) {
 
 		if cw.Events != nil {
 			if fx, ok := cw.Events[name]; ok {
-				go func() {
-					defer HandleRecover()
-					fx(cw.Component, data)
-				}()
+				fx(cw.Component, data)
 				return
 			}
 		}
@@ -256,74 +275,63 @@ func (cw *ComponentDriver[T]) ExecuteEvent(name string, data interface{}) {
 	}(cw)
 }
 
-// Remove
+// Remove removes the DOM node with the given id
 func (cw *ComponentDriver[T]) Remove(id string) {
-	muws.Lock()
-	defer muws.Unlock()
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "remove", "id": id})
+	cw.writeJSON(map[string]interface{}{"type": "remove", "id": id})
 }
 
 // AddNode add node to id
 func (cw *ComponentDriver[T]) AddNode(id string, value string) {
-	muws.Lock()
-	defer muws.Unlock()
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "addNode", "id": id, "value": value})
+	cw.writeJSON(map[string]interface{}{"type": "addNode", "id": id, "value": value})
 }
 
-// FillValue is same SetHTML
+// FillValueById sets innerHTML of the element with the given id
 func (cw *ComponentDriver[T]) FillValueById(id string, value string) {
-	muws.Lock()
-	defer muws.Unlock()
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "fill", "id": id, "value": value})
+	cw.writeJSON(map[string]interface{}{"type": "fill", "id": id, "value": value})
 }
 
 // FillValue is same SetHTML
 func (cw *ComponentDriver[T]) FillValue(value string) {
-	muws.Lock()
-	defer muws.Unlock()
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "fill", "id": cw.GetIDComponet(), "value": value})
+	cw.writeJSON(map[string]interface{}{"type": "fill", "id": cw.GetIDComponet(), "value": value})
 }
 
 // SetHTML is same FillValue :p haha, execute  document.getElementById("$id").innerHTML = $value
 func (cw *ComponentDriver[T]) SetHTML(value string) {
-	muws.Lock()
-	defer muws.Unlock()
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "fill", "id": cw.GetIDComponet(), "value": value})
+	cw.writeJSON(map[string]interface{}{"type": "fill", "id": cw.GetIDComponet(), "value": value})
 }
 
 // SetText execute document.getElementById("$id").innerText = $value
 func (cw *ComponentDriver[T]) SetText(value string) {
-	muws.Lock()
-	defer muws.Unlock()
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "text", "id": cw.GetIDComponet(), "value": value})
+	cw.writeJSON(map[string]interface{}{"type": "text", "id": cw.GetIDComponet(), "value": value})
 }
 
 // SetPropertie execute  document.getElementById("$id")[$propertie] = $value
 func (cw *ComponentDriver[T]) SetPropertie(propertie string, value interface{}) {
-	muws.Lock()
-	defer muws.Unlock()
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "propertie", "id": cw.GetIDComponet(), "propertie": propertie, "value": value})
+	cw.writeJSON(map[string]interface{}{"type": "propertie", "id": cw.GetIDComponet(), "propertie": propertie, "value": value})
 }
 
 // SetValue execute document.getElementById("$id").value = $value|
 func (cw *ComponentDriver[T]) SetValue(value interface{}) {
-	muws.Lock()
-	defer muws.Unlock()
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "set", "id": cw.GetIDComponet(), "value": value})
+	cw.writeJSON(map[string]interface{}{"type": "set", "id": cw.GetIDComponet(), "value": value})
 }
 
 // EvalScript execute eval($code);
 func (cw *ComponentDriver[T]) EvalScript(code string) {
-	muws.Lock()
-	defer muws.Unlock()
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "script", "value": code})
+	cw.writeJSON(map[string]interface{}{"type": "script", "value": code})
 }
 
 // SetStyle execute  document.getElementById("$id").style.cssText = $style
 func (cw *ComponentDriver[T]) SetStyle(style string) {
-	muws.Lock()
-	defer muws.Unlock()
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "style", "id": cw.GetIDComponet(), "value": style})
+	cw.writeJSON(map[string]interface{}{"type": "style", "id": cw.GetIDComponet(), "value": style})
+}
+
+func (cw *ComponentDriver[T]) writeJSON(msg map[string]interface{}) {
+	if cw.Conn == nil {
+		return
+	}
+	if err := cw.Conn.WriteJSON(msg); err != nil && cw.Conn.IsOpen() {
+		log.Println("liveview: write error:", err)
+	}
 }
 
 // GetElementById same as GetValue
@@ -353,20 +361,34 @@ func (cw *ComponentDriver[T]) GetText() string {
 
 // GetPropertie return document.getElementById("$id")[$propertie]
 func (cw *ComponentDriver[T]) GetPropertie(name string) string {
-
 	return cw.get(cw.GetIDComponet(), "propertie", name)
 }
 
+// get asks the browser for a value and waits (bounded) for the response.
 func (cw *ComponentDriver[T]) get(id string, subType string, value string) string {
-	muws.Lock()
-	defer muws.Unlock()
-	uid := uuid.NewString()
-	(*cw.channelIn)[uid] = make(chan interface{})
-	defer delete((*cw.channelIn), uid)
-	cw.Conn.WriteJSON(map[string]interface{}{"type": "get", "id": id, "value": value, "id_ret": uid, "sub_type": subType})
-	data := <-(*cw.channelIn)[uid]
-	if data != nil {
-		return fmt.Sprint(data)
+	if cw.Conn == nil || cw.channelIn == nil {
+		return ""
 	}
-	return ""
+	uid := uuid.NewString()
+	ch := make(chan interface{}, 1)
+	muChannel.Lock()
+	(*cw.channelIn)[uid] = ch
+	muChannel.Unlock()
+	defer func() {
+		muChannel.Lock()
+		delete(*cw.channelIn, uid)
+		muChannel.Unlock()
+	}()
+	if err := cw.Conn.WriteJSON(map[string]interface{}{"type": "get", "id": id, "value": value, "id_ret": uid, "sub_type": subType}); err != nil {
+		return ""
+	}
+	select {
+	case data := <-ch:
+		if data != nil {
+			return fmt.Sprint(data)
+		}
+		return ""
+	case <-time.After(getTimeout):
+		return ""
+	}
 }

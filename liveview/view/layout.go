@@ -19,6 +19,8 @@ type Layout struct {
 	HandlerInternalDestroy func()
 	HandlerFirstTime       func()
 	IntervalEventTime      time.Duration
+
+	tickerEventTime *time.Ticker
 }
 
 func (t *Layout) GetDriver() LiveDriver {
@@ -28,61 +30,65 @@ func (t *Layout) GetDriver() LiveDriver {
 var (
 	MuLayout sync.RWMutex = sync.RWMutex{}
 
-	Layaouts map[string]*Layout = make(map[string]*Layout)
+	// Layouts holds every live session layout, keyed by his uuid.
+	Layouts map[string]*Layout = make(map[string]*Layout)
+
+	// Layaouts is a deprecated alias of Layouts, kept for backward compatibility.
+	Layaouts = Layouts
 )
 
 func DeleteLayout(uid string) {
 	MuLayout.Lock()
 	defer MuLayout.Unlock()
-	if _, ok := Layaouts[uid]; ok {
-		delete(Layaouts, uid)
-		fmt.Println("Layout eliminado:", uid)
-	}
+	delete(Layouts, uid)
 }
 
+// SendToAllLayouts delivers msg to the HandlerEventIn of every live session.
 func SendToAllLayouts(msg interface{}) {
-	MuLayout.RLock() // Lectura concurrente segura
-	layoutsCopy := make([]*Layout, 0, len(Layaouts))
-	for _, v := range Layaouts {
+	MuLayout.RLock()
+	layoutsCopy := make([]*Layout, 0, len(Layouts))
+	for _, v := range Layouts {
 		layoutsCopy = append(layoutsCopy, v)
 	}
-	MuLayout.RUnlock() // Liberar el bloqueo antes de operar
+	MuLayout.RUnlock()
 
 	for _, v := range layoutsCopy {
-
-		v.HandlerEventIn(msg)
-
+		v.sendEventIn(msg)
 	}
 }
+
+// SendToLayouts delivers msg to the sessions with the given uuids.
 func SendToLayouts(msg interface{}, uuids ...string) {
 	layoutsCopy := make([]*Layout, 0, len(uuids))
-	func() {
-		MuLayout.Lock()
-		defer MuLayout.Unlock()
-		for _, uid := range uuids {
-			if v, ok := Layaouts[uid]; ok {
-				layoutsCopy = append(layoutsCopy, v)
-			}
+	MuLayout.RLock()
+	for _, uid := range uuids {
+		if v, ok := Layouts[uid]; ok {
+			layoutsCopy = append(layoutsCopy, v)
 		}
-	}()
+	}
+	MuLayout.RUnlock()
 
 	for _, v := range layoutsCopy {
-		v.HandlerEventIn(msg)
+		v.sendEventIn(msg)
+	}
+}
+
+func (t *Layout) sendEventIn(msg interface{}) {
+	defer HandleRecover()
+	if t.HandlerEventIn != nil {
+		t.HandlerEventIn(msg)
 	}
 }
 
 func NewLayout(uid string, paramHtml string) *ComponentDriver[*Layout] {
 	quit := make(chan struct{})
-	// Verificar si el layout ya existe
 	MuLayout.RLock()
-	if existingLayout, exists := Layaouts[uid]; exists {
+	if existingLayout, exists := Layouts[uid]; exists {
 		MuLayout.RUnlock()
-		fmt.Println("Layout ya existe:", uid)
 		return existingLayout.ComponentDriver
 	}
 	MuLayout.RUnlock()
 
-	// Si no existe, crear un nuevo layout
 	if Exists(paramHtml) {
 		paramHtml, _ = FileToString(paramHtml)
 	}
@@ -94,36 +100,29 @@ func NewLayout(uid string, paramHtml string) *ComponentDriver[*Layout] {
 		HandlerFirstTime: func() {
 			SendToLayouts("FIRST_TIME", uid)
 		},
-		HandlerEventIn: func(data interface{}) {
-
-		},
-		HandlerEventDestroy: func(id string) {
-
-		},
+		HandlerEventIn:      func(data interface{}) {},
+		HandlerEventDestroy: func(id string) {},
 		HandlerInternalDestroy: func() {
+			defer HandleRecoverPass()
 			close(quit)
 		},
 	}
+	c.tickerEventTime = time.NewTicker(c.IntervalEventTime)
 
-	// Guardar el nuevo layout en el mapa de layouts
 	MuLayout.Lock()
-	Layaouts[uid] = c
+	Layouts[uid] = c
 	MuLayout.Unlock()
 
-	fmt.Println("NewLayout", uid)
 	c.ComponentDriver = NewDriver(uid, c)
 
-	// Iniciar la goroutine para eventos
 	go func() {
-		firstTime := true
 		tickerFirstTime := time.NewTicker(250 * time.Millisecond)
-		tickerEventTime := time.NewTicker(c.IntervalEventTime)
-
 		defer func() {
 			tickerFirstTime.Stop()
-			tickerEventTime.Stop()
+			c.tickerEventTime.Stop()
 		}()
 
+		firstTime := true
 		for {
 			select {
 			case <-quit:
@@ -131,20 +130,29 @@ func NewLayout(uid string, paramHtml string) *ComponentDriver[*Layout] {
 			case <-tickerFirstTime.C:
 				if firstTime {
 					firstTime = false
+					tickerFirstTime.Stop()
 					if c.HandlerFirstTime != nil {
-						c.HandlerFirstTime()
+						func() {
+							defer HandleRecover()
+							c.HandlerFirstTime()
+						}()
 					} else {
 						SendToAllLayouts("FIRST_TIME")
 					}
 				}
-			case <-tickerEventTime.C:
-				c.HandlerEventTime()
-
+			case <-c.tickerEventTime.C:
+				if c.HandlerEventTime != nil {
+					func() {
+						defer HandleRecover()
+						c.HandlerEventTime()
+					}()
+				}
 			}
 		}
 	}()
 
-	// Parsear HTML para detectar elementos con ID
+	// Every element with an id inside the layout gets a None driver, so
+	// handlers can target it with GetDriverById without extra boilerplate.
 	doc, err := html.Parse(strings.NewReader(paramHtml))
 	if err != nil {
 		fmt.Println("Error parsing HTML:", err)
@@ -172,18 +180,23 @@ func NewLayout(uid string, paramHtml string) *ComponentDriver[*Layout] {
 func (t *Layout) SetHandlerFirstTime(fx func()) {
 	t.HandlerFirstTime = fx
 }
+
 func (t *Layout) SetHandlerEventIn(fx func(data interface{})) {
 	t.HandlerEventIn = fx
 }
 
+// SetHandlerEventTime makes fx run every IntervalEventTime while the session
+// is alive. It can be called at any moment; the interval is applied at once.
 func (t *Layout) SetHandlerEventTime(IntervalEventTime time.Duration, fx func()) {
 	t.IntervalEventTime = IntervalEventTime
 	t.HandlerEventTime = fx
+	t.tickerEventTime.Reset(IntervalEventTime)
 }
 
 func (t *Layout) SetHandlerEventDestroy(fx func(id string)) {
 	t.HandlerEventDestroy = fx
 }
+
 func (t *Layout) Start() {
 	t.Commit()
 }

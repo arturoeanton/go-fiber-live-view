@@ -1,208 +1,184 @@
 # Go Fiber LiveView
 
-Un framework para crear aplicaciones web interactivas en tiempo real usando Go, inspirado en Phoenix LiveView. Combina la potencia del backend de Go con actualizaciones dinámicas del frontend mediante WebSockets y WebAssembly.
+**Phoenix LiveView, pero para Go.** Construí aplicaciones web interactivas en
+tiempo real escribiendo solo Go: el estado vive en el servidor, los eventos
+viajan por WebSocket y el DOM se actualiza solo. Sin escribir JavaScript y
+casi sin escribir HTML gracias a la biblioteca de componentes incluida.
 
-## ¿Qué hace este proyecto?
+Construido sobre [Fiber v3](https://github.com/gofiber/fiber) (la última
+versión del framework web más rápido de Go) y un cliente WebAssembly
+compilado desde Go.
 
-Go Fiber LiveView permite desarrollar aplicaciones web completamente interactivas escribiendo únicamente código Go. Las actualizaciones de la interfaz se manejan automáticamente mediante WebSockets, y la manipulación del DOM se realiza a través de WebAssembly compilado desde Go.
+```go
+home.Register(func() view.LiveDriver {
+    count := 0
+    view.New("btn", &components.Button{Caption: "+1"}).
+        SetClick(func(b *components.Button, data interface{}) {
+            count++
+            b.FillValueById("result", fmt.Sprint(count))
+        })
+    return view.NewLayout("home-"+uuid.NewString(), `
+        <div class="lv-container">{{mount "btn"}} <span id="result">0</span></div>`)
+})
+```
 
-### Características principales:
+## Características
 
-- **Componentes reactivos**: Crea componentes reutilizables con estado
-- **Actualizaciones en tiempo real**: Sin necesidad de JavaScript manual
-- **WebSockets automáticos**: Comunicación bidireccional transparente
-- **WebAssembly**: Manipulación DOM directa desde Go
-- **Integración con Fiber**: Aprovecha el rendimiento de Fiber v2
+- ⚡ **Tiempo real sin JavaScript**: eventos y render por WebSocket, estilo Phoenix LiveView
+- 🧩 **16 componentes listos para usar**: formularios, tablas, modales, tabs… casi no escribís HTML
+- 🎨 **Tema CSS incluido**: las páginas se ven bien sin tocar una línea de estilo
+- 🚀 **Fiber v3**: la última versión del framework HTTP más rápido de Go
+- 📡 **Broadcast integrado**: `SendToAllLayouts` para apps colaborativas (chat, dashboards, todo compartido)
+- 📦 **Assets embebidos**: el wasm, el runtime y el CSS van dentro del binario; `go run` y listo
+- 🔄 **Una goroutine por sesión**: miles de sesiones concurrentes por nodo
 
-## Instalación y configuración
+## Performance
 
-### Prerrequisitos
+El core está optimizado para alta concurrencia:
 
-- Go 1.23.4 o superior
-- Un navegador web moderno con soporte para WebAssembly
+- Caché de templates parseados (no se re-parsea en cada render)
+- Pool de buffers (`sync.Pool`) para el render
+- Mutex de escritura **por conexión** (las sesiones no se bloquean entre sí)
+- Registro de componentes aislado por conexión (sin carreras entre sesiones)
+- Consultas servidor→browser (`GetValue`, etc.) con timeout: nunca quedan goroutines colgadas
 
-### Instalación
+## Instalación
 
-1. **Clonar el repositorio**:
 ```bash
 git clone https://github.com/arturoeanton/go-fiber-live-view.git
-cd go-fiber-live-view
+cd go-fiber-live-view/examples
+go run ./01_counter   # http://localhost:3001
 ```
 
-2. **Construir el módulo WebAssembly**:
-```bash
-./build_wasm.sh
-```
+No hace falta compilar nada más: el cliente WebAssembly ya viene compilado y
+embebido en la librería. Solo necesitás **Go 1.24+**. Si modificás el cliente
+(`wasm/`), regeneralo con `./build_wasm.sh`.
 
-3. **Instalar dependencias**:
-```bash
-cd liveview
-go mod tidy
-```
+## Ejemplos
 
-## Uso básico
+Todos en la carpeta [`examples/`](examples/), cada uno en su puerto — se
+pueden correr todos a la vez:
 
-### Ejemplo 1: Reloj en tiempo real
+| Comando | Demo | Qué muestra |
+|---|---|---|
+| `go run ./01_counter` | Contador | Hola mundo: estado en el servidor |
+| `go run ./02_clock` | Relojes | Push del servidor sin interacción |
+| `go run ./03_gallery` | Galería | **Todos los componentes** con eventos |
+| `go run ./04_todo` | Todo colaborativo | Estado compartido entre browsers |
+| `go run ./05_dashboard` | Dashboard | Métricas en vivo cada segundo |
+| `go run ./06_chat` | 💬 **LiveChat** | Salas, privados, typing, unread, historial |
 
-```bash
-cd example/example1
-go run main.go
-```
+El chat (`06_chat`) es el ejemplo estrella: salas múltiples con contadores de
+no-leídos, lista de usuarios online, mensajes privados (`@nick hola` o click
+en un usuario), indicador "está escribiendo…", historial con timestamps,
+emojis y mensajes de sistema. Todo renderizado desde Go.
 
-Visita `http://localhost:3000` para ver un reloj que se actualiza automáticamente.
-
-### Ejemplo 2: Chat en tiempo real
-
-```bash
-cd example/example2
-go run main.go
-```
-
-Aplicación de chat con salas públicas y privadas.
-
-### Ejemplo 3: Aplicación TODO
-
-```bash
-cd example/example_todo
-go run main.go
-```
-
-CRUD completo con persistencia y sincronización en tiempo real.
-
-## Crear tu primer componente
-
-### 1. Definir el componente
+## Componentes incluidos
 
 ```go
-package main
+import "github.com/arturoeanton/go-fiber-live-view/liveview/components"
+```
 
-import (
-    "github.com/arturoeliasanton/go-fiber-live-view/liveview/view"
-    "github.com/gofiber/fiber/v2"
-)
+| Componente | Descripción | Eventos |
+|---|---|---|
+| `Button` | Botón con variantes (primary, secondary, success, danger, ghost) | `Click` |
+| `InputText` | Input con label, placeholder y tipo | `Change`, `KeyUp`, `Enter`, `Blur` |
+| `TextArea` | Texto multilínea | `Change`, `KeyUp` |
+| `Select` | Dropdown con opciones | `Change` |
+| `Checkbox` | Casilla con label | `Change` |
+| `RadioGroup` | Grupo de radios | `Change` |
+| `Table` | Tabla con headers y filas clickeables | `RowClick` |
+| `List` | Lista clickeable | `ItemClick` |
+| `Tabs` | Pestañas con paneles | `SelectTab` |
+| `Modal` | Diálogo controlado desde el servidor (`Show`/`Hide`) | `Close` |
+| `Card` | Contenedor con header/footer | — |
+| `Alert` | Mensajes info/success/warning/danger, descartables | `Dismiss` |
+| `ProgressBar` | Barra de progreso (`SetProgress`) | — |
+| `Badge` | Pill de estado (`SetBadge`) | — |
+| `NavBar` | Barra de navegación | `ItemClick` |
+| `Spinner` | Indicador de carga (`Show`/`Hide`) | — |
+| `Clock` | Hora del servidor en vivo, formato e intervalo configurables | — |
 
-type MiComponente struct {
-    Contador int
+Todos usan el tema `liveview.css` embebido (personalizable con variables CSS
+`--lv-*`).
+
+## Crear tu propio componente
+
+```go
+type Counter struct {
+    *view.ComponentDriver[*Counter]
+    Count int
 }
 
-func (c *MiComponente) GetTemplate() string {
-    return `
-    <div>
-        <h2>Contador: {{.Contador}}</h2>
-        <button onclick="increment()">Incrementar</button>
-    </div>
-    `
+func (c *Counter) Start()                      { c.Commit() }
+func (c *Counter) GetDriver() view.LiveDriver  { return c }
+func (c *Counter) GetTemplate() string {
+    return `<div id="{{.IdComponent}}">
+        <button class="lv-btn" onclick="send_event(this.parentElement.id,'Inc')">+</button>
+        <b>{{.Count}}</b>
+    </div>`
 }
 
-func (c *MiComponente) Start() {
-    c.Contador = 0
-}
-
-func (c *MiComponente) GetDriver() view.LiveDriver {
-    return view.NewComponentDriver(c).
-        Event("increment", func() {
-            c.Contador++
-        })
+// Los métodos exportados son manejadores de eventos automáticamente.
+func (c *Counter) Inc(data interface{}) {
+    c.Count++
+    c.Commit() // re-renderiza y empuja el HTML al browser
 }
 ```
 
-### 2. Registrar el componente
+Registralo con `view.New("mi_contador", &Counter{})` y montalo en el layout
+con `{{mount "mi_contador"}}`.
+
+## API esencial
 
 ```go
-func main() {
-    app := fiber.New()
-    
-    home := view.PageControl{
-        Title:  "Mi App",
-        Path:   "/",
-        Router: app,
-    }
-    
-    home.Register(func() view.LiveDriver {
-        view.New("contador", &MiComponente{})
-        return view.NewLayout("layout", `
-            <div>{{mount "contador"}}</div>
-        `)
-    })
-    
-    app.Listen(":3000")
-}
+// Página
+page := view.PageControl{Title: "Mi App", Path: "/", Router: app}
+page.Register(func() view.LiveDriver { ... }) // corre una vez por conexión
+
+// Layout (el HTML de la página); cada elemento con id es manipulable desde Go
+doc := view.NewLayout("id-único-por-sesión", `<div id="zona">{{mount "comp"}}</div>`)
+doc.GetDriverById("zona").FillValue("<b>html</b>")  // innerHTML
+doc.GetDriverById("zona").SetStyle("color:red")
+
+// Tiempo real
+doc.Component.SetHandlerEventIn(func(data interface{}) { ... })  // recibir broadcasts
+doc.Component.SetHandlerEventTime(time.Second, func() { ... })   // tick periódico
+doc.Component.SetHandlerEventDestroy(func(id string) { ... })    // cleanup al desconectar
+view.SendToAllLayouts("MSG")            // broadcast a todas las sesiones
+view.SendToLayouts("MSG", id1, id2)     // broadcast dirigido
 ```
 
 ## Estructura del proyecto
 
 ```
 /
-├── liveview/           # Framework principal
-│   ├── view/          # Core del sistema LiveView
-│   ├── components/    # Componentes reutilizables
-│   └── assets/        # Archivos WASM y JS generados
-├── wasm/              # Código WebAssembly del cliente
-├── example/           # Ejemplos de uso
-│   ├── example1/      # Reloj básico
-│   ├── example2/      # Chat en tiempo real
-│   ├── example3/      # Ejemplo simple
-│   └── example_todo/  # Aplicación TODO
-└── build_wasm.sh      # Script de construcción WASM
+├── liveview/           # La librería
+│   ├── view/           # Core: drivers, layouts, páginas, websocket
+│   ├── components/     # Biblioteca de componentes
+│   └── assets/         # wasm + runtime + css (embebidos con go:embed)
+├── wasm/               # Código fuente del cliente WebAssembly
+├── examples/           # 6 ejemplos listos para correr
+└── build_wasm.sh       # Regenera el cliente wasm
 ```
 
-## Dependencias principales
+## Notas de seguridad
 
-- **Fiber v2**: Framework web de alto rendimiento
-- **WebSocket**: Comunicación en tiempo real
-- **UUID**: Generación de identificadores únicos
-- **Template**: Sistema de plantillas de Go
+Los templates usan `text/template`: el contenido dinámico **no se escapa
+automáticamente**. Cuando muestres entrada de usuarios (como hace el chat),
+escapala con `html.EscapeString`. No expongas `EvalScript` a datos sin
+sanitizar.
 
-## Contribuir al proyecto
+## Contribuir
 
-### Estilo de código
-
-- Seguir las convenciones de Go (`go fmt`, `go vet`)
-- Documentar funciones públicas con comentarios
-- Usar nombres descriptivos para variables y funciones
-- Mantener funciones pequeñas y enfocadas
-
-### Estructura de Pull Requests
-
-1. **Fork** el repositorio
-2. **Crear branch** descriptivo: `feature/nueva-funcionalidad`
-3. **Commits** atómicos con mensajes claros
-4. **Tests** para nuevas funcionalidades
-5. **Documentación** actualizada si es necesario
-
-### Proceso de contribución
-
-1. **Reportar issue** antes de grandes cambios
-2. **Discutir** la implementación propuesta
-3. **Implementar** siguiendo el estilo del proyecto
-4. **Testing** exhaustivo
-5. **Code review** collaborative
-
-### Áreas que necesitan contribución
-
-- **Tests unitarios**: El proyecto necesita cobertura de testing
-- **Documentación**: Más ejemplos y guías
-- **Seguridad**: Revisión y hardening de seguridad
-- **Performance**: Optimizaciones y benchmarks
-- **Componentes**: Biblioteca de componentes comunes
-
-## Roadmap
-
-- **v0.2**: Sistema de testing y CI/CD
-- **v0.3**: Mejoras de seguridad y validación
-- **v0.4**: Biblioteca de componentes estándar
-- **v1.0**: Release estable para producción
+PRs bienvenidos. Áreas con más impacto: tests, diffing de DOM (morphdom),
+más componentes, reconexión con estado, documentación.
 
 ## Licencia
 
-Este proyecto está licenciado bajo la Licencia BSD de 3 cláusulas. Ver el archivo `LICENSE` para más detalles.
-
-## Soporte
-
-- **Issues**: Reporta bugs o solicita features
-- **Discussions**: Preguntas y ayuda general
-- **Wiki**: Documentación adicional y tutoriales
+BSD 3 cláusulas. Ver `LICENSE`.
 
 ## Reconocimientos
 
-Inspirado en Phoenix LiveView del ecosistema Elixir, adaptado para aprovechar la potencia y simplicidad de Go.
+Inspirado en [Phoenix LiveView](https://github.com/phoenixframework/phoenix_live_view)
+del ecosistema Elixir, adaptado a la potencia y simplicidad de Go.
