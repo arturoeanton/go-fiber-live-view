@@ -28,7 +28,7 @@ Each example uses its own port, so you can run all of them at the same time.
 | **05_dashboard** | Periodic server-side updates with `SetHandlerEventTime`: live metrics, progress bars and a request table. |
 | **06_chat** | 💬 **The showcase.** Multi-room chat with online users, private messages (`@nick hi` or click a user), typing indicator, unread counters, message history, emojis and system messages. |
 | **07_board** | 🎨 **Excalidraw-style whiteboard.** Pen, shapes, arrows, text and eraser; select/move, undo, zoom/pan, SVG export; live collaboration with remote cursors; multiple boards persisted in SQLite (`board.db`). |
-| **08_notion** | 🪶 **Notion-style workspace.** Nested pages, block editor (headings, todos, lists, quotes, code, callouts, images, tables) with markdown shortcuts and "/" commands, drag & drop, block-level live collaboration with editing badges and presence avatars. SQLite (`notion.db`). |
+| **08_notion** | 🪶 **Notion-style workspace.** Nested pages with covers, icons and favorites; block editor (headings, todos, lists, toggles, quotes, code, callouts, images, tables) with a floating "/" menu, markdown shortcuts, Tab indenting, ↑/↓ navigation, drag & drop and duplicate; global search (Ctrl+K); block-level live collaboration with editing badges and presence avatars. SQLite (`notion.db`). |
 | **09_pad** | ✍️ **CRDT co-editing.** Character-by-character collaborative editing (Google-Docs style) with the framework's transparent CRDT support: `view.NewSharedText` + one `live-text` attribute. Type in the same word from two browsers. |
 
 ## Tips

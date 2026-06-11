@@ -1,13 +1,14 @@
 // Notion-style collaborative workspace, rendered from the server.
 //
-//   - Sidebar with nested pages (create, rename, delete, fold, emoji icons)
-//   - Block editor: text, headings, todos, lists, quotes, code, callouts,
-//     dividers, images by URL and tables — switch types with the "/" menu,
-//     the block menu (⋯) or Notion's markdown shortcuts ("# ", "- ", "[] "…)
-//   - Enter splits into a new block, Backspace on an empty block removes it,
-//     drag blocks with the ⋮⋮ handle
-//   - Block-level live collaboration (like Notion): everyone sees commits in
-//     real time, each block shows who is editing it, presence avatars on top
+//   - Sidebar with nested pages, favorites, and global search (Ctrl+K)
+//   - Block editor: text, headings, todos, lists, toggles, quotes, code,
+//     callouts, dividers, images by URL and tables
+//   - Floating "/" menu with live filtering, Notion markdown shortcuts
+//     ("# ", "- ", "[] "…), block menu (⋯), hover ＋, duplicate
+//   - Enter splits blocks, Backspace merges, ↑/↓ navigate between blocks,
+//     Tab / Shift+Tab indent, drag with the ⋮⋮ handle
+//   - Page covers, emoji icons, "edited ago" and presence avatars
+//   - Block-level live collaboration with editing badges (like Notion)
 //   - Everything persisted in SQLite (notion.db, pure-Go driver)
 package main
 
@@ -30,8 +31,12 @@ type session struct {
 	editing     int64
 	editCell    string
 	menuFor     int64
+	slashFor    int64
+	slashFilter string
 	iconMenu    bool
+	search      string
 	collapsed   map[int64]bool
+	toggles     map[int64]bool // collapsed toggle blocks (per-user view state)
 }
 
 var (
@@ -62,6 +67,7 @@ var slashCommands = map[string]string{
 	"/lista": "bullet", "/numerada": "number", "/cita": "quote",
 	"/codigo": "code", "/código": "code", "/callout": "callout",
 	"/divisor": "divider", "/imagen": "image", "/tabla": "table",
+	"/toggle": "toggle", "/desplegable": "toggle",
 }
 
 var mdShortcuts = []struct{ prefix, typ string }{
@@ -118,6 +124,7 @@ func main() {
 			color:     userColors[userSeq%len(userColors)],
 			page:      firstRootLocked(),
 			collapsed: map[int64]bool{},
+			toggles:   map[int64]bool{},
 		}
 		sessions[lid] = s
 		mu.Unlock()
@@ -129,15 +136,17 @@ func main() {
 
 		fill := func(id, content string) { document.GetDriverById(id).FillValue(content) }
 
-		fillAllLocked := func() (sidebar, topbar, head, editor string) {
-			return renderSidebarLocked(s), renderTopbarLocked(s), renderPageHeadLocked(s), renderEditorLocked(s)
-		}
 		refreshAll := func() {
 			mu.Lock()
-			sb, tb, hd, ed := fillAllLocked()
+			sb := renderSidebarLocked(s)
+			tb := renderTopbarLocked(s)
+			cv := renderCoverLocked(s)
+			hd := renderPageHeadLocked(s)
+			ed := renderEditorLocked(s)
 			mu.Unlock()
 			fill("sidebar_box", sb)
 			fill("topbar_box", tb)
+			fill("page_cover", cv)
 			fill("page_head", hd)
 			fill("editor_box", ed)
 		}
@@ -151,6 +160,14 @@ func main() {
 			view.SendToAllLayouts(fmt.Sprintf("%s|%v", kind, arg))
 		}
 
+		// startEditing sets s.editing and clears transient menus.
+		startEditingLocked := func(id int64) {
+			s.editing = id
+			s.editCell = ""
+			s.menuFor = 0
+			s.slashFor = 0
+		}
+
 		// ------------------------------------------------------ sidebar --
 
 		sbSink.SetEvent("Open", func(_ *view.None, data interface{}) {
@@ -161,7 +178,9 @@ func main() {
 				return
 			}
 			s.page = id
-			s.editing, s.menuFor, s.editCell, s.iconMenu = 0, 0, "", false
+			s.search = ""
+			startEditingLocked(0)
+			s.iconMenu = false
 			mu.Unlock()
 			refreshAll()
 			bcast("V", "*")
@@ -171,6 +190,18 @@ func main() {
 			id := atoi64(fmt.Sprint(data))
 			mu.Lock()
 			s.collapsed[id] = !s.collapsed[id]
+			sb := renderSidebarLocked(s)
+			mu.Unlock()
+			fill("sidebar_box", sb)
+		})
+
+		sbSink.SetEvent("Search", func(_ *view.None, data interface{}) {
+			q := strings.TrimSpace(fmt.Sprint(data))
+			if len(q) > 60 {
+				q = q[:60]
+			}
+			mu.Lock()
+			s.search = q
 			sb := renderSidebarLocked(s)
 			mu.Unlock()
 			fill("sidebar_box", sb)
@@ -186,7 +217,8 @@ func main() {
 			p := dbAddPage(parent, "Sin título")
 			s.collapsed[parent] = false
 			s.page = p.ID
-			s.editing, s.menuFor, s.editCell = 0, 0, ""
+			s.search = ""
+			startEditingLocked(0)
 			mu.Unlock()
 			refreshAll()
 			bcast("T", "*")
@@ -202,7 +234,7 @@ func main() {
 			dbDeletePage(id)
 			if pages[s.page] == nil {
 				s.page = firstRootLocked()
-				s.editing, s.menuFor, s.editCell = 0, 0, ""
+				startEditingLocked(0)
 			}
 			mu.Unlock()
 			refreshAll()
@@ -219,11 +251,10 @@ func main() {
 				mu.Unlock()
 				return
 			}
-			s.editing, s.editCell, s.menuFor = id, "", 0
+			startEditingLocked(id)
 			mu.Unlock()
 			refreshEditor()
-			bcast("V", s.page) // editing badges live in other viewers' editors
-			bcast("P", s.page)
+			bcast("P", s.page) // editing badges live in other viewers' editors
 		})
 
 		edSink.SetEvent("Commit", func(_ *view.None, data interface{}) {
@@ -243,13 +274,15 @@ func main() {
 				b.Content = b.Content[:10000]
 			}
 			dbUpdateBlock(b)
+			touchPage(s.page)
 			s.menuFor = 0
+			s.slashFor = 0
 			if enter {
 				newType := "p"
 				if (b.Type == "bullet" || b.Type == "number" || b.Type == "todo") && strings.TrimSpace(b.Content) != "" {
 					newType = b.Type
 				}
-				nb := dbAddBlock(s.page, newType, "", posAfter(s.page, idx))
+				nb := dbAddBlock(s.page, newType, "", posAfter(s.page, idx), b.Indent)
 				s.editing = nb.ID
 			} else {
 				s.editing = 0
@@ -258,6 +291,74 @@ func main() {
 			page := s.page
 			mu.Unlock()
 			bcast("P", page)
+		})
+
+		// floating "/" menu with live filter
+		edSink.SetEvent("Slash", func(_ *view.None, data interface{}) {
+			parts := strings.SplitN(fmt.Sprint(data), "|", 2)
+			if len(parts) != 2 {
+				return
+			}
+			mu.Lock()
+			s.slashFor = atoi64(parts[0])
+			s.slashFilter = parts[1]
+			s.menuFor = 0
+			mu.Unlock()
+			refreshEditor()
+		})
+
+		edSink.SetEvent("SlashClose", func(_ *view.None, data interface{}) {
+			mu.Lock()
+			s.slashFor = 0
+			mu.Unlock()
+			refreshEditor()
+		})
+
+		applySlashType := func(id int64, typ string) {
+			mu.Lock()
+			b, _ := findBlock(s.page, id)
+			if b == nil || !validType(typ) {
+				mu.Unlock()
+				return
+			}
+			b.Type = typ
+			b.Content = ""
+			switch typ {
+			case "table":
+				b.Content = tableJSON([][]string{{"", ""}, {"", ""}})
+				s.editing = 0
+			case "divider":
+				s.editing = 0
+			default:
+				s.editing = id
+			}
+			dbUpdateBlock(b)
+			touchPage(s.page)
+			s.slashFor = 0
+			s.menuFor = 0
+			page := s.page
+			mu.Unlock()
+			bcast("P", page)
+		}
+
+		edSink.SetEvent("SlashSet", func(_ *view.None, data interface{}) {
+			parts := strings.SplitN(fmt.Sprint(data), "|", 2)
+			if len(parts) != 2 {
+				return
+			}
+			applySlashType(atoi64(parts[0]), parts[1])
+		})
+
+		edSink.SetEvent("SlashPick", func(_ *view.None, data interface{}) {
+			parts := strings.SplitN(fmt.Sprint(data), "|", 2)
+			if len(parts) != 2 {
+				return
+			}
+			matches := filterTypes(parts[1])
+			if len(matches) == 0 {
+				return
+			}
+			applySlashType(atoi64(parts[0]), matches[0].code)
 		})
 
 		edSink.SetEvent("DelMerge", func(_ *view.None, data interface{}) {
@@ -269,7 +370,8 @@ func main() {
 				return
 			}
 			dbDeleteBlock(s.page, id)
-			s.editing = 0
+			touchPage(s.page)
+			startEditingLocked(0)
 			if idx > 0 {
 				bs := getBlocks(s.page)
 				prev := bs[idx-1]
@@ -282,6 +384,68 @@ func main() {
 			bcast("P", page)
 		})
 
+		// ↑ / ↓ between blocks
+		moveEditing := func(id int64, dir int) {
+			mu.Lock()
+			_, idx := findBlock(s.page, id)
+			if idx < 0 {
+				mu.Unlock()
+				return
+			}
+			bs := getBlocks(s.page)
+			for j := idx + dir; j >= 0 && j < len(bs); j += dir {
+				if bs[j].Type != "table" && bs[j].Type != "divider" {
+					startEditingLocked(bs[j].ID)
+					break
+				}
+			}
+			page := s.page
+			mu.Unlock()
+			refreshEditor()
+			bcast("P", page)
+		}
+		edSink.SetEvent("EditPrev", func(_ *view.None, data interface{}) { moveEditing(atoi64(fmt.Sprint(data)), -1) })
+		edSink.SetEvent("EditNext", func(_ *view.None, data interface{}) { moveEditing(atoi64(fmt.Sprint(data)), 1) })
+
+		// Tab / Shift+Tab
+		edSink.SetEvent("Indent", func(_ *view.None, data interface{}) {
+			parts := strings.SplitN(fmt.Sprint(data), "|", 2)
+			if len(parts) != 2 {
+				return
+			}
+			mu.Lock()
+			b, _ := findBlock(s.page, atoi64(parts[0]))
+			if b == nil {
+				mu.Unlock()
+				return
+			}
+			d := 1
+			if parts[1] == "-1" {
+				d = -1
+			}
+			b.Indent += d
+			if b.Indent < 0 {
+				b.Indent = 0
+			}
+			if b.Indent > 5 {
+				b.Indent = 5
+			}
+			dbUpdateBlock(b)
+			touchPage(s.page)
+			page := s.page
+			mu.Unlock()
+			bcast("P", page)
+		})
+
+		// collapse / expand a toggle block (per-user view state)
+		edSink.SetEvent("FoldBlk", func(_ *view.None, data interface{}) {
+			id := atoi64(fmt.Sprint(data))
+			mu.Lock()
+			s.toggles[id] = !s.toggles[id]
+			mu.Unlock()
+			refreshEditor()
+		})
+
 		edSink.SetEvent("Toggle", func(_ *view.None, data interface{}) {
 			id := atoi64(fmt.Sprint(data))
 			mu.Lock()
@@ -292,6 +456,7 @@ func main() {
 			}
 			b.Checked = !b.Checked
 			dbUpdateBlock(b)
+			touchPage(s.page)
 			page := s.page
 			mu.Unlock()
 			bcast("P", page)
@@ -305,6 +470,7 @@ func main() {
 			} else {
 				s.menuFor = id
 			}
+			s.slashFor = 0
 			mu.Unlock()
 			refreshEditor()
 		})
@@ -333,6 +499,25 @@ func main() {
 				s.editing = id
 			}
 			dbUpdateBlock(b)
+			touchPage(s.page)
+			s.menuFor = 0
+			page := s.page
+			mu.Unlock()
+			bcast("P", page)
+		})
+
+		edSink.SetEvent("Duplicate", func(_ *view.None, data interface{}) {
+			id := atoi64(fmt.Sprint(data))
+			mu.Lock()
+			b, idx := findBlock(s.page, id)
+			if b == nil {
+				mu.Unlock()
+				return
+			}
+			nb := dbAddBlock(s.page, b.Type, b.Content, posAfter(s.page, idx), b.Indent)
+			nb.Checked = b.Checked
+			dbUpdateBlock(nb)
+			touchPage(s.page)
 			s.menuFor = 0
 			page := s.page
 			mu.Unlock()
@@ -344,6 +529,7 @@ func main() {
 			mu.Lock()
 			if b, _ := findBlock(s.page, id); b != nil {
 				dbDeleteBlock(s.page, id)
+				touchPage(s.page)
 			}
 			if s.editing == id {
 				s.editing = 0
@@ -354,11 +540,30 @@ func main() {
 			bcast("P", page)
 		})
 
+		addBlockAfter := func(idx int, indent int) {
+			nb := dbAddBlock(s.page, "p", "", posAfter(s.page, idx), indent)
+			startEditingLocked(nb.ID)
+		}
+
 		edSink.SetEvent("AddEnd", func(_ *view.None, data interface{}) {
 			mu.Lock()
-			nb := dbAddBlock(s.page, "p", "", posAfter(s.page, len(getBlocks(s.page))-1))
-			s.editing = nb.ID
-			s.menuFor = 0
+			addBlockAfter(len(getBlocks(s.page))-1, 0)
+			touchPage(s.page)
+			page := s.page
+			mu.Unlock()
+			bcast("P", page)
+		})
+
+		edSink.SetEvent("AddAfter", func(_ *view.None, data interface{}) {
+			id := atoi64(fmt.Sprint(data))
+			mu.Lock()
+			b, idx := findBlock(s.page, id)
+			if b == nil {
+				mu.Unlock()
+				return
+			}
+			addBlockAfter(idx, b.Indent)
+			touchPage(s.page)
 			page := s.page
 			mu.Unlock()
 			bcast("P", page)
@@ -392,6 +597,7 @@ func main() {
 			}
 			dbUpdateBlock(src)
 			sortBlocks(s.page)
+			touchPage(s.page)
 			page := s.page
 			mu.Unlock()
 			bcast("P", page)
@@ -408,6 +614,7 @@ func main() {
 				s.editing = b.ID
 				s.editCell = parts[1] + "," + parts[2]
 				s.menuFor = 0
+				s.slashFor = 0
 			}
 			mu.Unlock()
 			refreshEditor()
@@ -434,6 +641,7 @@ func main() {
 				rows[r][c] = parts[2]
 				b.Content = tableJSON(rows)
 				dbUpdateBlock(b)
+				touchPage(s.page)
 			}
 			s.editing, s.editCell = 0, ""
 			page := s.page
@@ -474,12 +682,13 @@ func main() {
 			}
 			b.Content = tableJSON(rows)
 			dbUpdateBlock(b)
+			touchPage(s.page)
 			page := s.page
 			mu.Unlock()
 			bcast("P", page)
 		})
 
-		// page head
+		// page head: title, icon, cover, favorite
 		edSink.SetEvent("Title", func(_ *view.None, data interface{}) {
 			title := strings.TrimSpace(fmt.Sprint(data))
 			if len(title) > 120 {
@@ -488,7 +697,7 @@ func main() {
 			mu.Lock()
 			if p := pages[s.page]; p != nil {
 				p.Title = title
-				dbUpdatePage(p)
+				touchPage(s.page)
 			}
 			mu.Unlock()
 			bcast("T", "*")
@@ -517,12 +726,59 @@ func main() {
 			mu.Lock()
 			if p := pages[s.page]; p != nil {
 				p.Icon = icon
-				dbUpdatePage(p)
+				touchPage(s.page)
 			}
 			s.iconMenu = false
 			mu.Unlock()
 			bcast("T", "*")
 			bcast("P", s.page)
+		})
+
+		coverIndex := func(cover string) int {
+			for i, c := range coverPresets {
+				if c == cover {
+					return i
+				}
+			}
+			return -1
+		}
+		edSink.SetEvent("CoverSet", func(_ *view.None, data interface{}) {
+			mu.Lock()
+			if p := pages[s.page]; p != nil && p.Cover == "" {
+				p.Cover = coverPresets[int(p.ID)%len(coverPresets)]
+				touchPage(s.page)
+			}
+			mu.Unlock()
+			bcast("P", s.page)
+		})
+		edSink.SetEvent("CoverNext", func(_ *view.None, data interface{}) {
+			mu.Lock()
+			if p := pages[s.page]; p != nil && p.Cover != "" {
+				p.Cover = coverPresets[(coverIndex(p.Cover)+1)%len(coverPresets)]
+				touchPage(s.page)
+			}
+			mu.Unlock()
+			bcast("P", s.page)
+		})
+		edSink.SetEvent("CoverDel", func(_ *view.None, data interface{}) {
+			mu.Lock()
+			if p := pages[s.page]; p != nil {
+				p.Cover = ""
+				touchPage(s.page)
+			}
+			mu.Unlock()
+			bcast("P", s.page)
+		})
+
+		edSink.SetEvent("FavToggle", func(_ *view.None, data interface{}) {
+			mu.Lock()
+			if p := pages[s.page]; p != nil {
+				p.Fav = !p.Fav
+				dbUpdatePage(p)
+			}
+			mu.Unlock()
+			bcast("T", "*")
+			bcast("V", s.page)
 		})
 
 		// -------------------------------------------------- layout & in --
@@ -536,10 +792,13 @@ func main() {
 			</div>
 			<div class="nt-main">
 				<div class="nt-topbar" id="topbar_box"></div>
-				<div class="nt-doc"><div class="nt-page">
-					<div id="page_head"></div>
-					<div id="editor_box"></div>
-				</div></div>
+				<div class="nt-doc">
+					<div id="page_cover"></div>
+					<div class="nt-page">
+						<div id="page_head"></div>
+						<div id="editor_box"></div>
+					</div>
+				</div>
 			</div>
 			<span style="display:none">{{mount "sb"}}{{mount "ed"}}</span>
 		</div>`)
@@ -555,13 +814,9 @@ func main() {
 			mu.Lock()
 			if pages[s.page] == nil {
 				s.page = firstRootLocked()
-				s.editing, s.menuFor, s.editCell = 0, 0, ""
-				sb, tb, hd, ed := fillAllLocked()
+				startEditingLocked(0)
 				mu.Unlock()
-				fill("sidebar_box", sb)
-				fill("topbar_box", tb)
-				fill("page_head", hd)
-				fill("editor_box", ed)
+				refreshAll()
 				return
 			}
 			mine := arg == "*" || atoi64(arg) == s.page
@@ -581,9 +836,13 @@ func main() {
 				}
 				ed := renderEditorLocked(s)
 				hd := renderPageHeadLocked(s)
+				cv := renderCoverLocked(s)
+				tb := renderTopbarLocked(s)
 				mu.Unlock()
 				fill("editor_box", ed)
 				fill("page_head", hd)
+				fill("page_cover", cv)
+				fill("topbar_box", tb)
 			case "V":
 				if !mine {
 					mu.Unlock()

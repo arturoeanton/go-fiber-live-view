@@ -83,11 +83,13 @@ persistidos en SQLite (driver Go puro, sin cgo). El SVG se renderiza completo
 en el servidor.
 
 GoNotion (`08_notion`) es un workspace estilo Notion: páginas anidadas con
-iconos, editor de bloques (títulos, todos, listas, citas, código, callouts,
-imágenes y tablas), atajos markdown (`# `, `- `, `[] `…) y comandos `/`,
-drag & drop de bloques, y colaboración en vivo a nivel bloque — con badge de
-quién está editando cada bloque y avatares de presencia, igual que Notion.
-Todo persistido en SQLite.
+portadas, iconos y favoritos; editor de bloques (títulos, todos, listas,
+desplegables, citas, código, callouts, imágenes y tablas) con menú `/`
+flotante con filtrado en vivo, atajos markdown (`# `, `- `, `[] `…),
+indentación con Tab, navegación con ↑/↓, drag & drop y duplicar; búsqueda
+global (Ctrl+K); y colaboración en vivo a nivel bloque — con badge de quién
+está editando cada bloque y avatares de presencia, igual que Notion. Todo
+persistido en SQLite.
 
 ## Componentes incluidos
 
